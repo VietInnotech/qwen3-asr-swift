@@ -119,18 +119,7 @@ SEANet decoder blocks (SnakeBeta + TransposedConv1d + residual units):
 Audio waveform [1, T*1920, 1] at 24kHz
 ```
 
-## Performance (M2 Max, 64 GB)
-
-| Metric | Short (1s) | Medium (3s) | Long (6s) |
-|--------|-----------|-------------|------------|
-| Tokens generated | 19 | 45 | 80 |
-| Generate (talker + code pred) | 1.4s | 2.0s | 3.5s |
-| Codec decode | 0.16s | 0.20s | 0.35s |
-| **Total** | **1.6s** | **2.3s** | **3.9s** |
-| **RTF** | **1.2** | **0.7** | **0.7** |
-| Per-step | 73ms | 45ms | 43ms |
-
-### vs Apple AVSpeechSynthesizer (M2 Max)
+## vs Apple AVSpeechSynthesizer (M2 Max, 64 GB)
 
 | | Qwen3-TTS (release) | Apple TTS |
 |---|-----------|-----------|
