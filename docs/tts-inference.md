@@ -174,19 +174,3 @@ Reference audio (24kHz)
           (injected as speaker embedding in codec prefix)
 ```
 
-## Implementation Status
-
-| Component | Status | Lines |
-|-----------|--------|-------|
-| MRoPE | Done | ~120 |
-| Talker (28-layer transformer) | Done | ~350 |
-| Code Predictor (5-layer + 15 heads) | Done | ~200 |
-| Speech Tokenizer Decoder | Done | ~600 |
-| RVQ / Codebooks | Done | ~200 |
-| Sampling (top-k/p/temp/rep penalty) | Done | ~110 |
-| Inference orchestration | Done | ~280 |
-| Weight loading (new keys) | Done | ~360 |
-| Configuration | Done | ~150 |
-| Speech Tokenizer Encoder | Not yet | — |
-| Speaker Encoder (ECAPA-TDNN) | Not yet | — |
-| Streaming inference | Not yet | — |
