@@ -1,4 +1,4 @@
-# ASR Inference Pipeline
+# ASR Inference Pipeline ([Qwen3-ASR](https://arxiv.org/abs/2601.21337))
 
 ## Overview
 

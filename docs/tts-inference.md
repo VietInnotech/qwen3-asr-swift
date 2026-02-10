@@ -1,6 +1,6 @@
 # TTS Inference Pipeline (Qwen3-TTS)
 
-> Reference for Swift MLX port. Based on Qwen3-TTS-12Hz-0.6B.
+> Reference for Swift MLX port. Based on [Qwen3-TTS-12Hz-0.6B](https://arxiv.org/abs/2601.15621). Speech tokenizer decoder based on [Mimi](https://arxiv.org/abs/2410.00037) (Kyutai).
 
 ## Overview
 

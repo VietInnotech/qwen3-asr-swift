@@ -1,4 +1,4 @@
-# ASR Model Architecture
+# ASR Model Architecture ([paper](https://arxiv.org/abs/2601.21337))
 
 ## Overview
 
