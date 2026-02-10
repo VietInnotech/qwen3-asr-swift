@@ -102,11 +102,10 @@ let audio = model.synthesize(text: "Hello", language: "english", sampling: confi
 
 | Model | Framework | Short (1s) | Medium (3s) | Long (6s) |
 |-------|-----------|-----------|-------------|------------|
-| Qwen3-TTS-0.6B (4-bit) | MLX Swift (release) | 1.6s (RTF 1.2) | 2.3s (RTF 0.7) | 3.9s (RTF 0.7) |
-| Qwen3-TTS-0.6B (4-bit) | MLX Swift (debug) | 1.9s (RTF 2.1) | 4.8s (RTF 1.7) | 6.8s (RTF 1.7) |
+| Qwen3-TTS-0.6B (4-bit) | MLX Swift | 1.6s (RTF 1.2) | 2.3s (RTF 0.7) | 3.9s (RTF 0.7) |
 | Apple `AVSpeechSynthesizer` | AVFoundation | 0.08s | 0.08s | 0.17s (RTF 0.02) |
 
-> Qwen3-TTS generates natural, expressive speech with prosody and emotion. In release mode it runs **faster than real-time** (RTF < 1.0). Apple's built-in TTS is ~35x faster but produces robotic, monotone speech.
+> Qwen3-TTS generates natural, expressive speech with prosody and emotion, running **faster than real-time** (RTF < 1.0). Apple's built-in TTS is ~35x faster but produces robotic, monotone speech.
 
 RTF = Real-Time Factor (lower is better, < 1.0 = faster than real-time).
 

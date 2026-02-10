@@ -121,8 +121,6 @@ Audio waveform [1, T*1920, 1] at 24kHz
 
 ## Performance (M2 Max, 64 GB)
 
-### Release Build
-
 | Metric | Short (1s) | Medium (3s) | Long (6s) |
 |--------|-----------|-------------|------------|
 | Tokens generated | 19 | 45 | 80 |
@@ -131,14 +129,6 @@ Audio waveform [1, T*1920, 1] at 24kHz
 | **Total** | **1.6s** | **2.3s** | **3.9s** |
 | **RTF** | **1.2** | **0.7** | **0.7** |
 | Per-step | 73ms | 45ms | 43ms |
-
-### Debug Build
-
-| Metric | Short (1s) | Medium (3s) | Long (6s) |
-|--------|-----------|-------------|------------|
-| **Total** | **1.9s** | **4.8s** | **6.8s** |
-| **RTF** | **2.1** | **1.7** | **1.7** |
-| Per-step | 125ms | 120ms | 120ms |
 
 ### vs Apple AVSpeechSynthesizer (M2 Max)
 
@@ -152,13 +142,12 @@ Audio waveform [1, T*1920, 1] at 24kHz
 | On-device | Yes (MLX) | Yes (AVFoundation) |
 | Model size | ~1.7 GB | Built-in |
 
-### Optimizations Applied
+### Implementation Notes
 
-1. **Chunked codec decoding** — Process codec frames in overlapping chunks (`chunkSize=25, leftContext=10`) reducing O(T²) attention to O(chunk²). 45-100x faster decode.
-2. **Batch embedding lookups** — Sum all 15 codebook group embeddings in one call instead of 15 separate allocations per step.
-3. **Bulk float extraction** — Replace per-element `.item()` loop with single `.asArray(Float.self)` call for waveform extraction.
-4. **Removed GPU sync barriers** — Eliminated 5 unnecessary `eval()` calls per generation step that prevented GPU pipelining.
-5. **Causal mask in codec decoder transformer** — Correctness fix matching Python's `create_additive_causal_mask`. Required for chunked decoding.
+- **Chunked codec decoding** — Codec frames processed in overlapping chunks (`chunkSize=25, leftContext=10`), reducing O(T²) attention to O(chunk²)
+- **Batch embedding lookups** — All 15 codebook group embeddings summed in one call per step
+- **Bulk float extraction** — Waveform extracted via single `.asArray(Float.self)` call
+- **Causal mask in decoder transformer** — Additive causal mask for pre-transformer attention (required for chunked decoding correctness)
 
 ## Streaming Mode (Not Yet Implemented)
 
