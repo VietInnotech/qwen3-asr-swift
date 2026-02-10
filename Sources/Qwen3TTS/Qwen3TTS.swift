@@ -90,6 +90,35 @@ public class Qwen3TTSModel {
         return waveform
     }
 
+    // MARK: - Warm-up
+
+    /// Run minimal dummy forward passes to compile Metal shaders and allocate GPU buffers.
+    /// This eliminates first-inference latency from shader compilation.
+    public func warmUp() {
+        guard let tokenizer = tokenizer else { return }
+
+        // Run a minimal prefill through the talker to compile all Metal shaders.
+        let textTokens = prepareTextTokens(text: "hi", tokenizer: tokenizer)
+        let codecPrefix = buildCodecPrefix(languageId: CodecTokens.languageEnglish)
+        let (prefillEmbeds, trailingTextHidden, ttsPadEmbed) = buildPrefillEmbeddings(
+            textTokens: textTokens, codecPrefixTokens: codecPrefix)
+        eval(prefillEmbeds, trailingTextHidden, ttsPadEmbed)
+
+        // Talker prefill: compiles all 28-layer attention + MLP shaders
+        let prefillLen = prefillEmbeds.dim(1)
+        let positionIds = buildTTSPositionIds(seqLen: prefillLen)
+        let (logits, hiddenStates, _) = talker(
+            inputsEmbeds: prefillEmbeds, positionIds: positionIds, cache: nil)
+        eval(logits)
+
+        // Parallel code predictor: compiles 5-layer shaders + all 15 lm_heads
+        let lastHidden = hiddenStates[0..., (prefillLen - 1)..<prefillLen, 0...]
+        let code0Embed = talker.embedCodec(MLXArray([Int32(0)]).expandedDimensions(axis: 0))
+        let cpInput = concatenated([lastHidden, code0Embed], axis: 1)
+        let allLogits = codePredictor.predictAllGroupsParallel(inputsEmbeds: cpInput)
+        eval(allLogits)
+    }
+
     // MARK: - Text Preparation
 
     /// Prepare text tokens using chat template.
@@ -471,6 +500,9 @@ public extension Qwen3TTSModel {
         progressHandler?(0.85, "Loading speech tokenizer decoder...")
         try TTSWeightLoader.loadSpeechTokenizerDecoderWeights(
             into: model.codecDecoder, from: tokenizerCacheDir)
+
+        progressHandler?(0.95, "Warming up model...")
+        model.warmUp()
 
         progressHandler?(1.0, "Ready")
         return model

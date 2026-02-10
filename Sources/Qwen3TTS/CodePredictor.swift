@@ -207,6 +207,30 @@ public class CodePredictorModel: Module {
         return (logits, newCache)
     }
 
+    /// Predict all 15 codebook groups in parallel from the same hidden state.
+    /// Single forward pass through 5 layers, then apply all 15 lm_heads.
+    /// - Parameter inputsEmbeds: [1, 2, D] — [hidden_state, code_0_embed]
+    /// - Returns: 15 logit arrays, each [1, 1, vocab]
+    public func predictAllGroupsParallel(
+        inputsEmbeds: MLXArray
+    ) -> [MLXArray] {
+        var hiddenStates = inputsEmbeds
+
+        // Build causal mask for length 2
+        let mask = MLXArray([Float(0), Float(-1e9), Float(0), Float(0)])
+            .reshaped(1, 1, 2, 2)
+            .asType(hiddenStates.dtype)
+
+        for layer in layers {
+            let (output, _) = layer(hiddenStates, attentionMask: mask, cache: nil)
+            hiddenStates = output
+        }
+        hiddenStates = norm(hiddenStates)
+
+        let lastHidden = hiddenStates[0..., 1..<2, 0...]  // [1, 1, D]
+        return lmHeads.map { $0(lastHidden) }
+    }
+
     /// Embed a token for a specific codebook group
     public func embedCodecGroup(_ tokenIds: MLXArray, groupIndex: Int) -> MLXArray {
         codecEmbeddings[groupIndex](tokenIds)
