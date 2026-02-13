@@ -83,6 +83,30 @@ swift build -c release
 .build/release/qwen3-tts-cli "Hello world" --output output.wav --language english
 ```
 
+### Batch Synthesis
+
+Synthesize multiple texts in a single batched forward pass for higher throughput:
+
+```swift
+let texts = ["Good morning everyone.", "The weather is nice today.", "Please open the window."]
+let audioList = model.synthesizeBatch(texts: texts, language: "english", maxBatchSize: 4)
+// audioList[i] is 24kHz mono float samples for texts[i]
+for (i, audio) in audioList.enumerated() {
+    try WAVWriter.write(samples: audio, sampleRate: 24000, to: URL(fileURLWithPath: "output_\(i).wav"))
+}
+```
+
+#### Batch CLI
+
+```bash
+# Create a file with one text per line
+echo "Hello world.\nGoodbye world." > texts.txt
+.build/release/qwen3-tts-cli --batch-file texts.txt --output output.wav --batch-size 4
+# Produces output_0.wav, output_1.wav, ...
+```
+
+> Batch mode amortizes model weight loads across items. Expect ~1.5-2.5x throughput improvement for B=4 on Apple Silicon. Best results when texts produce similar-length audio.
+
 ### Sampling Options
 
 ```swift
@@ -190,7 +214,7 @@ swift test --filter Qwen3ASRIntegrationTests
 - [ ] TTS streaming inference
 - [ ] TTS voice cloning (speaker encoder)
 - [ ] TTS voice design
-- [x] TTS inference optimizations (chunked decode, batch embeddings)
+- [x] TTS inference optimizations (chunked decode, batch embeddings, batch synthesis)
 - [ ] ASR streaming inference
 - [ ] iOS app example
 
