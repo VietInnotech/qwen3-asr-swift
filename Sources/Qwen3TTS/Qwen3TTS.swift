@@ -97,16 +97,22 @@ public class Qwen3TTSModel {
     /// All items generate tokens in lockstep. Items that finish early (hit EOS) receive
     /// padding tokens. Generation stops when all items are done or the safety cap is reached.
     ///
+    /// Texts are sorted by length before batching so similar-length items are grouped together,
+    /// minimizing wasted compute from padding. Results are returned in the original input order.
+    ///
+    /// **Memory:** Each item uses ~55 MB KV cache per 500 tokens. B=4 at 500 tokens ≈ 220 MB.
+    ///
     /// **Limitations:**
     /// - Repetition penalty is not applied in batch mode (requires per-item token history).
     /// - Items with very different output lengths waste compute on padding steps.
+    ///   If one item fails to hit EOS, all items in the batch run to the safety cap.
     ///
     /// - Parameters:
     ///   - texts: Array of texts to synthesize
     ///   - language: Language tag (e.g., "english", "chinese")
     ///   - sampling: Sampling configuration
     ///   - maxBatchSize: Maximum items per batch (default 4)
-    /// - Returns: Array of audio samples at 24kHz, one per input text
+    /// - Returns: Array of audio samples at 24kHz, one per input text (same order as input)
     public func synthesizeBatch(
         texts: [String],
         language: String = "english",
@@ -129,18 +135,43 @@ public class Qwen3TTSModel {
             return synthesizeBatch(texts: texts, language: "english", sampling: sampling, maxBatchSize: maxBatchSize)
         }
 
+        // Sort texts by length to group similar-length items together.
+        // This minimizes padding waste: if one batch has all short texts and another
+        // has all long texts, no short text is forced to wait for a long one.
+        let indexed = texts.enumerated().map { ($0.offset, $0.element) }
+        let sorted = indexed.sorted { $0.1.count < $1.1.count }
+        let sortedTexts = sorted.map { $0.1 }
+        let originalIndices = sorted.map { $0.0 }
+
         // Process in chunks if exceeding maxBatchSize
-        if texts.count > maxBatchSize {
-            var allResults: [[Float]] = []
-            for chunkStart in stride(from: 0, to: texts.count, by: maxBatchSize) {
-                let chunkEnd = min(chunkStart + maxBatchSize, texts.count)
-                let chunk = Array(texts[chunkStart..<chunkEnd])
-                let chunkResults = synthesizeBatch(texts: chunk, language: language, sampling: sampling, maxBatchSize: maxBatchSize)
-                allResults.append(contentsOf: chunkResults)
+        var sortedResults: [[Float]]
+        if sortedTexts.count > maxBatchSize {
+            sortedResults = []
+            for chunkStart in stride(from: 0, to: sortedTexts.count, by: maxBatchSize) {
+                let chunkEnd = min(chunkStart + maxBatchSize, sortedTexts.count)
+                let chunk = Array(sortedTexts[chunkStart..<chunkEnd])
+                let chunkResults = synthesizeBatchInternal(texts: chunk, langId: langId, tokenizer: tokenizer, sampling: sampling)
+                sortedResults.append(contentsOf: chunkResults)
             }
-            return allResults
+        } else {
+            sortedResults = synthesizeBatchInternal(texts: sortedTexts, langId: langId, tokenizer: tokenizer, sampling: sampling)
         }
 
+        // Restore original order
+        var results = [[Float]](repeating: [], count: texts.count)
+        for (sortedIdx, origIdx) in originalIndices.enumerated() {
+            results[origIdx] = sortedResults[sortedIdx]
+        }
+        return results
+    }
+
+    /// Internal batch synthesis for a single chunk (already sorted, within maxBatchSize).
+    private func synthesizeBatchInternal(
+        texts: [String],
+        langId: Int,
+        tokenizer: Qwen3Tokenizer,
+        sampling: SamplingConfig
+    ) -> [[Float]] {
         let t0 = CFAbsoluteTimeGetCurrent()
         let batchSize = texts.count
 
@@ -190,6 +221,19 @@ public class Qwen3TTSModel {
             sampling: sampling)
 
         let t2 = CFAbsoluteTimeGetCurrent()
+
+        // Log padding waste: how many steps each item wasted after hitting EOS
+        let maxFrames = frameCounts.max() ?? 0
+        if maxFrames > 0 {
+            let wastedSteps = frameCounts.map { maxFrames - $0 }
+            let totalWaste = wastedSteps.reduce(0, +)
+            let wasteRatio = Double(totalWaste) / Double(maxFrames * batchSize)
+            if wasteRatio > 0.3 {
+                print("  Warning: \(Int(wasteRatio * 100))% padding waste " +
+                      "(items finished at: \(frameCounts.map { String($0) }.joined(separator: ", ")) steps). " +
+                      "Batch similar-length texts for better efficiency.")
+            }
+        }
 
         // Stage 3: Decode each item
         var results: [[Float]] = []
