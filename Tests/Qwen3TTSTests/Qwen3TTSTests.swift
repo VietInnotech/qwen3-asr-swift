@@ -193,6 +193,7 @@ final class SpeakerConfigTests: XCTestCase {
 final class InstructTokenTests: XCTestCase {
 
     static let ttsModelId = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
+    private static var _sharedModel: Qwen3TTSModel?
 
     /// Verify instruct token format: <|im_start|>user\n{text}<|im_end|>\n
     func testInstructTokenFormat() async throws {
@@ -246,9 +247,12 @@ final class InstructTokenTests: XCTestCase {
     // MARK: - Helpers
 
     private func loadTTSModel() async throws -> Qwen3TTSModel {
-        return try await Qwen3TTSModel.fromPretrained(
+        if let model = Self._sharedModel { return model }
+        let model = try await Qwen3TTSModel.fromPretrained(
             modelId: Self.ttsModelId
         ) { _, _ in }
+        Self._sharedModel = model
+        return model
     }
 
     private func getTokenizer(_ model: Qwen3TTSModel) throws -> Qwen3Tokenizer {
@@ -272,6 +276,8 @@ final class CustomVoiceInstructE2ETests: XCTestCase {
     static let customVoiceModelId = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
     static let ttsTokenizerModelId = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
     static let asrModelId = "mlx-community/Qwen3-ASR-0.6B-4bit"
+    private static var _sharedTTSModel: Qwen3TTSModel?
+    private static var _sharedASRModel: Qwen3ASRModel?
 
     /// CustomVoice + instruct should produce valid audio
     func testInstructSynthesisProducesAudio() async throws {
@@ -384,22 +390,28 @@ final class CustomVoiceInstructE2ETests: XCTestCase {
     // MARK: - Helpers
 
     private func loadCustomVoiceModel() async throws -> Qwen3TTSModel {
+        if let model = Self._sharedTTSModel { return model }
         print("Loading CustomVoice model...")
-        return try await Qwen3TTSModel.fromPretrained(
+        let model = try await Qwen3TTSModel.fromPretrained(
             modelId: Self.customVoiceModelId,
             tokenizerModelId: Self.ttsTokenizerModelId
         ) { progress, status in
             print("[CV \(Int(progress * 100))%] \(status)")
         }
+        Self._sharedTTSModel = model
+        return model
     }
 
     private func loadASRModel() async throws -> Qwen3ASRModel {
+        if let model = Self._sharedASRModel { return model }
         print("Loading ASR model...")
-        return try await Qwen3ASRModel.fromPretrained(
+        let model = try await Qwen3ASRModel.fromPretrained(
             modelId: Self.asrModelId
         ) { progress, status in
             print("[ASR \(Int(progress * 100))%] \(status)")
         }
+        Self._sharedASRModel = model
+        return model
     }
 
     private func fmt(_ value: Double) -> String {
@@ -416,6 +428,8 @@ final class TTSE2ETests: XCTestCase {
     static let ttsModelId = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
     static let ttsTokenizerModelId = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
     static let asrModelId = "mlx-community/Qwen3-ASR-0.6B-4bit"
+    private static var _sharedTTSModel: Qwen3TTSModel?
+    private static var _sharedASRModel: Qwen3ASRModel?
 
     // MARK: - English Tests
 
@@ -610,22 +624,28 @@ final class TTSE2ETests: XCTestCase {
     // MARK: - Helpers
 
     private func loadTTSModel() async throws -> Qwen3TTSModel {
+        if let model = Self._sharedTTSModel { return model }
         print("Loading TTS model...")
-        return try await Qwen3TTSModel.fromPretrained(
+        let model = try await Qwen3TTSModel.fromPretrained(
             modelId: Self.ttsModelId,
             tokenizerModelId: Self.ttsTokenizerModelId
         ) { progress, status in
             print("[TTS \(Int(progress * 100))%] \(status)")
         }
+        Self._sharedTTSModel = model
+        return model
     }
 
     private func loadASRModel() async throws -> Qwen3ASRModel {
+        if let model = Self._sharedASRModel { return model }
         print("Loading ASR model...")
-        return try await Qwen3ASRModel.fromPretrained(
+        let model = try await Qwen3ASRModel.fromPretrained(
             modelId: Self.asrModelId
         ) { progress, status in
             print("[ASR \(Int(progress * 100))%] \(status)")
         }
+        Self._sharedASRModel = model
+        return model
     }
 
     struct SynthesisResult {
@@ -687,6 +707,8 @@ final class TTSBatchTests: XCTestCase {
     static let ttsModelId = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
     static let ttsTokenizerModelId = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
     static let asrModelId = "mlx-community/Qwen3-ASR-0.6B-4bit"
+    private static var _sharedTTSModel: Qwen3TTSModel?
+    private static var _sharedASRModel: Qwen3ASRModel?
 
     // MARK: - Test 1: Build compiles cleanly (verified by running this test)
 
@@ -844,22 +866,28 @@ final class TTSBatchTests: XCTestCase {
     // MARK: - Helpers
 
     private func loadTTSModel() async throws -> Qwen3TTSModel {
+        if let model = Self._sharedTTSModel { return model }
         print("Loading TTS model...")
-        return try await Qwen3TTSModel.fromPretrained(
+        let model = try await Qwen3TTSModel.fromPretrained(
             modelId: Self.ttsModelId,
             tokenizerModelId: Self.ttsTokenizerModelId
         ) { progress, status in
             print("[TTS \(Int(progress * 100))%] \(status)")
         }
+        Self._sharedTTSModel = model
+        return model
     }
 
     private func loadASRModel() async throws -> Qwen3ASRModel {
+        if let model = Self._sharedASRModel { return model }
         print("Loading ASR model...")
-        return try await Qwen3ASRModel.fromPretrained(
+        let model = try await Qwen3ASRModel.fromPretrained(
             modelId: Self.asrModelId
         ) { progress, status in
             print("[ASR \(Int(progress * 100))%] \(status)")
         }
+        Self._sharedASRModel = model
+        return model
     }
 
     private func fmt(_ value: Double) -> String {
@@ -876,6 +904,8 @@ final class TTSStreamingTests: XCTestCase {
     static let ttsModelId = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
     static let ttsTokenizerModelId = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
     static let asrModelId = "mlx-community/Qwen3-ASR-0.6B-4bit"
+    private static var _sharedTTSModel: Qwen3TTSModel?
+    private static var _sharedASRModel: Qwen3ASRModel?
 
     // MARK: - Test 1: Streaming produces valid audio
 
@@ -1121,22 +1151,28 @@ final class TTSStreamingTests: XCTestCase {
     // MARK: - Helpers
 
     private func loadTTSModel() async throws -> Qwen3TTSModel {
+        if let model = Self._sharedTTSModel { return model }
         print("Loading TTS model...")
-        return try await Qwen3TTSModel.fromPretrained(
+        let model = try await Qwen3TTSModel.fromPretrained(
             modelId: Self.ttsModelId,
             tokenizerModelId: Self.ttsTokenizerModelId
         ) { progress, status in
             print("[TTS \(Int(progress * 100))%] \(status)")
         }
+        Self._sharedTTSModel = model
+        return model
     }
 
     private func loadASRModel() async throws -> Qwen3ASRModel {
+        if let model = Self._sharedASRModel { return model }
         print("Loading ASR model...")
-        return try await Qwen3ASRModel.fromPretrained(
+        let model = try await Qwen3ASRModel.fromPretrained(
             modelId: Self.asrModelId
         ) { progress, status in
             print("[ASR \(Int(progress * 100))%] \(status)")
         }
+        Self._sharedASRModel = model
+        return model
     }
 
     private func fmt(_ value: Double) -> String {
