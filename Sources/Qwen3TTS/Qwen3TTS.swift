@@ -1066,7 +1066,7 @@ public class Qwen3TTSModel {
     ///
     /// The instruct tokens are embedded via `text_embedding → text_projection` and prepended
     /// before the existing prefill sequence (role + codec overlay + first_text).
-    private func prepareInstructTokens(instruct: String, tokenizer: Qwen3Tokenizer) -> [Int] {
+    func prepareInstructTokens(instruct: String, tokenizer: Qwen3Tokenizer) -> [Int] {
         let imStartId = 151644
         let imEndId = 151645
         let newlineId = 198
