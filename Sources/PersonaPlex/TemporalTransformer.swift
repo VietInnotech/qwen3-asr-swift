@@ -26,7 +26,7 @@ public final class RMSNormF32: Module {
 
 public final class TemporalAttention: Module {
     private let cfg: TemporalTransformerConfig
-    @ModuleInfo public var in_proj: Linear    // Q/K/V packed (float16, not quantized)
+    @ModuleInfo public var in_proj: Module    // QuantizedLinear: Q/K/V packed
     @ModuleInfo public var out_proj: Module   // QuantizedLinear for output
     @ModuleInfo public var rope: RoPE
 
@@ -36,7 +36,7 @@ public final class TemporalAttention: Module {
         self.cfg = cfg
         let totalDim = 3 * cfg.dim  // Q + K + V packed (no GQA, all 32 heads)
         self._in_proj = ModuleInfo(wrappedValue:
-            Linear(cfg.dim, totalDim, bias: false))
+            QuantizedLinear(cfg.dim, totalDim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
         self._out_proj = ModuleInfo(wrappedValue:
             QuantizedLinear(cfg.dim, cfg.dim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
         self._rope = ModuleInfo(wrappedValue: RoPE(
@@ -48,7 +48,7 @@ public final class TemporalAttention: Module {
         let b = xs.shape[0]
         let t = xs.shape[1]
 
-        let qkv = in_proj(xs)
+        let qkv = applyLinear(in_proj, xs)
         let qkvR = qkv.reshaped([b, t, 3, cfg.numHeads, cfg.headDim])
 
         // [B, T, H, D] -> [B, H, T, D]

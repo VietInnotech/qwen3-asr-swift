@@ -112,7 +112,9 @@ public enum PersonaPlexWeightLoader {
 
     /// Sanitize temporal transformer weights:
     /// - Rename `*.alpha` (1,1,D) → `*.weight` (D)  (RMSNorm)
-    /// - Rename `*.in_proj_weight` → `*.in_proj.weight`  (packed QKV)
+    /// - Rename `*.in_proj_weight` → `*.in_proj.weight`  (packed QKV, quantized)
+    /// - Rename `*.in_proj_scales` → `*.in_proj.scales`
+    /// - Rename `*.in_proj_biases` → `*.in_proj.biases`
     private static func sanitizeTemporalWeights(
         _ weights: [String: MLXArray]
     ) -> [String: MLXArray] {
@@ -129,9 +131,14 @@ public enum PersonaPlexWeightLoader {
                 }
             }
 
-            // Attention in_proj: flat param → submodule
-            if key.hasSuffix(".in_proj_weight") {
-                newKey = String(key.dropLast("_weight".count)) + ".weight"
+            // Attention in_proj: flat param → submodule (quantized: weight/scales/biases)
+            for suffix in ["_weight", "_scales", "_biases"] {
+                let needle = ".in_proj" + suffix
+                if key.hasSuffix(needle) {
+                    let dotSuffix = "." + String(suffix.dropFirst())  // _weight → .weight
+                    newKey = String(key.dropLast(needle.count)) + ".in_proj" + dotSuffix
+                    break
+                }
             }
 
             out[newKey] = newValue
@@ -168,11 +175,18 @@ public enum PersonaPlexWeightLoader {
             }
 
             // Attention in_proj: flat param → submodule
-            if key.hasSuffix(".in_proj_weight") {
-                newKey = String(key.dropLast("_weight".count)) + ".weight"
-                out[newKey] = newValue
-                continue
+            var matchedInProj = false
+            for suffix in ["_weight", "_scales", "_biases"] {
+                let needle = ".in_proj" + suffix
+                if key.hasSuffix(needle) {
+                    let dotSuffix = "." + String(suffix.dropFirst())
+                    newKey = String(key.dropLast(needle.count)) + ".in_proj" + dotSuffix
+                    out[newKey] = newValue
+                    matchedInProj = true
+                    break
+                }
             }
+            if matchedInProj { continue }
 
             // Per-step FFN: detect gating.{step}.linear_in/out.weight pattern
             if let match = parsePerStepGatingKey(key) {

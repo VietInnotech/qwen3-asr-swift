@@ -34,7 +34,7 @@ This implementation ports offline inference to Swift/MLX with 4-bit quantization
 - **Layers**: 32
 - **Dimension**: 4096
 - **Heads**: 32 (head_dim=128)
-- **FFN**: SiLU-gated (SwiGLU), intermediate=16896 (dim × 4.125)
+- **FFN**: SiLU-gated (SwiGLU), intermediate=11264 (dim × 2/3 × 4.125, LLaMA-style)
 - **Norm**: RMSNorm computed in float32
 - **Position**: RoPE (base=10000)
 - **Context**: 3000 tokens
@@ -51,7 +51,7 @@ All embeddings are summed before entering the transformer.
 - **Layers**: 6
 - **Dimension**: 1024
 - **Heads**: 16 (head_dim=64)
-- **FFN**: SiLU-gated (SwiGLU), intermediate=4224
+- **FFN**: SiLU-gated (SwiGLU), intermediate=2816 (dim × 2/3 × 4.125, LLaMA-style)
 - **Context**: 8 tokens
 - **Steps**: 16 (expanded from 8 in base Moshi)
 - **No positional embedding** (depformer_pos_emb="none")
@@ -67,7 +67,7 @@ for k in 0..<16:
   else:      input += audio_embedding[k-1](prev_audio_token)
   for layer in 6_layers:
     input = layer(input, step=k)  # uses weight[k]
-  logits = linears[k](rms_norm(input))
+  logits = linears[k](input)
   token = sample(logits)
 ```
 
@@ -98,12 +98,21 @@ Semantic codebooks (cb0) and text have no delay; acoustic codebooks (cb1-7) have
 
 | File | Size | Contents |
 |------|------|----------|
-| `temporal.safetensors` | ~3.5 GB | 32-layer transformer (4-bit quantized) |
-| `depformer.safetensors` | ~50 MB | 6-layer depformer with MultiLinear (BF16) |
-| `embeddings.safetensors` | ~500 MB | 17 embeddings + output heads (BF16) |
-| `mimi.safetensors` | ~385 MB | Mimi codec encoder/decoder/quantizer |
+| `temporal.safetensors` | ~3.4 GB | 32-layer transformer (4-bit quantized, including in_proj QKV) |
+| `depformer.safetensors` | ~2.4 GB | 6-layer depformer with 16-step MultiLinear (BF16) |
+| `embeddings.safetensors` | ~943 MB | 17 embeddings + output heads (BF16) |
+| `mimi.safetensors` | ~367 MB | Mimi codec encoder/decoder/quantizer |
 | `voices/*.safetensors` | ~6 MB | 18 voice preset embeddings |
 | `tokenizer_spm_32k_3.model` | ~553 KB | SentencePiece text tokenizer |
+
+### Weight Key Sanitization
+
+The conversion script (`scripts/convert_personaplex.py`) maps PyTorch key conventions to Swift module paths:
+
+- **RMSNorm**: `*.alpha` (1,1,D) → `*.weight` (D)
+- **Packed QKV**: `*.in_proj_weight` → `*.in_proj.weight` (+ `_scales`/`_biases` for 4-bit)
+- **Per-step FFN**: `layers.{l}.gating.{step}.linear_in.weight` → concatenated `layers.{l}.gating.linear_in.weight` (MultiLinear format)
+- **Embeddings split**: `embeddings.safetensors` contains mixed temporal + depformer keys, split at load time
 
 ## Voices
 
@@ -115,11 +124,12 @@ Semantic codebooks (cb0) and text have no delay; acoustic codebooks (cb1-7) have
 
 ## Memory Requirements
 
-- Temporal transformer (4-bit): ~3.5 GB
+- Temporal transformer (4-bit): ~3.4 GB
+- Depformer (BF16, 16-step MultiLinear): ~2.4 GB
+- Embeddings + output heads: ~943 MB
+- Mimi codec: ~367 MB
 - KV cache (context=3000): ~1 GB
-- Mimi codec: ~400 MB
-- Depformer + embeddings: ~550 MB
-- **Total**: ~5.5 GB (fits comfortably in 64 GB M2 Max)
+- **Total**: ~8.1 GB (fits comfortably on 64 GB M-series Macs)
 
 ## References
 

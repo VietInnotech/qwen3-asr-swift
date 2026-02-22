@@ -134,18 +134,24 @@ def classify_key(key: str):
 
 def should_quantize_temporal(key: str, tensor: torch.Tensor) -> bool:
     """Check if a temporal transformer key should be 4-bit quantized."""
-    if not key.endswith(".weight"):
-        return False
     if tensor.ndim != 2:
         return False
     rows, cols = tensor.shape
     if cols % 64 != 0:
         return False
-    parts = key.rsplit(".", 2)
-    if len(parts) >= 2:
-        layer_name = parts[-2]
-        if layer_name in TEMPORAL_QUANTIZE_SUFFIXES:
+
+    # Standard submodule weight: e.g. "layers.0.self_attn.out_proj.weight"
+    if key.endswith(".weight"):
+        parts = key.rsplit(".", 2)
+        if len(parts) >= 2 and parts[-2] in TEMPORAL_QUANTIZE_SUFFIXES:
             return True
+
+    # Flat packed param: e.g. "layers.0.self_attn.in_proj_weight"
+    if key.endswith("_weight"):
+        stem = key.rsplit(".", 1)[-1].replace("_weight", "")
+        if stem in TEMPORAL_QUANTIZE_SUFFIXES:
+            return True
+
     return False
 
 
@@ -216,9 +222,16 @@ def convert_temporal(state_dict: dict, quantize: bool, group_size: int = 64):
 
         if quantize and should_quantize_temporal(new_key, tensor):
             packed, scales, biases = quantize_4bit(tensor, group_size)
-            output[new_key] = packed
-            output[new_key.replace(".weight", ".scales")] = scales
-            output[new_key.replace(".weight", ".biases")] = biases
+            # Handle both "foo.weight" and "foo_weight" naming for quantized keys
+            if new_key.endswith("_weight"):
+                base = new_key[:-len("_weight")]
+                output[new_key] = packed
+                output[base + "_scales"] = scales
+                output[base + "_biases"] = biases
+            else:
+                output[new_key] = packed
+                output[new_key.replace(".weight", ".scales")] = scales
+                output[new_key.replace(".weight", ".biases")] = biases
             print(f"  [Q4] {key} -> {new_key} {list(packed.shape)} uint32")
         else:
             if tensor.dtype in (torch.float32, torch.float64):
