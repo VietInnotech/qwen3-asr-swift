@@ -206,10 +206,35 @@ Both variants support these language IDs in the codec prefix:
 
 CustomVoice accepts a natural language `instruct` string to control tone, emotion, and prosody. The instruction is prepended to the text input in ChatML format and interpreted by the Talker transformer.
 
-Examples:
-- `"Speak in a cheerful, upbeat tone"`
-- `"Read this slowly and solemnly"`
-- `"Whisper this softly"`
+**Token format:**
+```
+<|im_start|>user\n{instruct}<|im_end|>\n
+```
+
+This is prepended before the role/text embeddings in the prefill sequence:
+```
+[instruct_embeddings | role_embed | text_embeddings | trailing_tokens]
+```
+
+**Default instruct:** When no instruct is provided and the CustomVoice model is loaded, `"Speak naturally."` is applied automatically. This prevents the model from producing rambling or unfocused output, especially for short texts.
+
+**Example instructions:**
+
+| Instruction | Effect |
+|-------------|--------|
+| `"Speak naturally."` | Default — neutral, clear speech |
+| `"Speak in a cheerful, upbeat tone"` | Happy, energetic delivery |
+| `"Read this slowly and solemnly"` | Slow pacing, serious tone |
+| `"Whisper this softly"` | Quiet, breathy voice |
+| `"Speak with excitement and energy"` | Fast, enthusiastic delivery |
+| `"Read this as a news anchor"` | Professional, measured cadence |
+| `"Speak gently, as if to a child"` | Soft, warm, simple phrasing |
+
+**Notes:**
+- The Base model does **not** support instruct — the parameter is ignored
+- Instruct works with all synthesis modes: basic, streaming, and batch
+- Different instructions produce measurably different audio (verified in tests)
+- Keep instructions concise (1-2 sentences) for best results
 
 ### Codec Prefix Construction
 
