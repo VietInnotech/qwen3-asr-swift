@@ -6,27 +6,60 @@ import MLXNN
 // MARK: - MultiLinear
 
 /// Stores weights for N steps as a single tensor and performs step-specific matmul.
-/// Weight shape: [numSteps * outDim, inDim] (concatenated along rows)
+/// Weight shape (float): [numSteps * outDim, inDim] (concatenated along rows)
+/// Weight shape (int4):  [numSteps * outDim, inDim/8] (packed uint32)
 /// At step k: slice weight[k*outDim..<(k+1)*outDim, :] and matmul.
+/// Supports optional int4 quantization via scales/biases (MLX QuantizedLinear format).
 public final class MultiLinear: Module {
     public var weight: MLXArray
-    public var bias: MLXArray?
+    public var scales: MLXArray?   // Quantization per-group scales (non-nil when quantized)
+    public var biases: MLXArray?   // Quantization per-group zero-points (non-nil when quantized)
+    public var bias: MLXArray?     // Optional linear bias (distinct from quantization biases)
     private let numSteps: Int
     private let outDim: Int
+    private let groupSize: Int
+    private let bits: Int
 
-    public init(numSteps: Int, inDim: Int, outDim: Int, bias: Bool = false) {
+    public init(numSteps: Int, inDim: Int, outDim: Int, bias: Bool = false,
+                groupSize: Int = 64, bits: Int = 16) {
         self.numSteps = numSteps
         self.outDim = outDim
-        let scale: Float = 1.0 / Float(inDim)
-        self.weight = MLXRandom.uniform(low: -scale, high: scale, [numSteps * outDim, inDim])
+        self.groupSize = groupSize
+        self.bits = bits
+
+        if bits < 16 {
+            // Quantized: initialize placeholders matching MLX QuantizedLinear format
+            let packedCols = inDim / (32 / bits)
+            let numGroups = inDim / groupSize
+            self.weight = MLXArray.zeros([numSteps * outDim, packedCols], dtype: .uint32)
+            self.scales = MLXArray.zeros([numSteps * outDim, numGroups], dtype: .float16)
+            self.biases = MLXArray.zeros([numSteps * outDim, numGroups], dtype: .float16)
+        } else {
+            let scale: Float = 1.0 / Float(inDim)
+            self.weight = MLXRandom.uniform(low: -scale, high: scale, [numSteps * outDim, inDim])
+            self.scales = nil
+            self.biases = nil
+        }
         self.bias = bias ? MLXArray.zeros([numSteps, outDim]) : nil
     }
 
     public func callAsFunction(_ xs: MLXArray, step: Int) -> MLXArray {
         let start = step * outDim
         let end = start + outDim
-        let w = weight[start..<end, 0...]  // [outDim, inDim]
-        var result = xs.matmul(w.T)
+        let w = weight[start..<end, 0...]
+
+        var result: MLXArray
+        if let s = scales, let b = biases {
+            // Quantized path: per-step slice of packed weight + scales + biases
+            let ws = s[start..<end, 0...]
+            let wb = b[start..<end, 0...]
+            result = quantizedMM(
+                xs, w, scales: ws, biases: wb,
+                transpose: true, groupSize: groupSize, bits: bits)
+        } else {
+            result = xs.matmul(w.T)
+        }
+
         if let b = bias {
             result = result + b[step]
         }
@@ -47,9 +80,11 @@ public final class DepformerAttention: Module {
         self.cfg = cfg
         let totalDim = 3 * cfg.dim  // Q + K + V packed
         self._in_proj = ModuleInfo(wrappedValue: MultiLinear(
-            numSteps: cfg.numSteps, inDim: cfg.dim, outDim: totalDim, bias: false))
+            numSteps: cfg.numSteps, inDim: cfg.dim, outDim: totalDim, bias: false,
+            groupSize: cfg.groupSize, bits: cfg.bits))
         self._out_proj = ModuleInfo(wrappedValue: MultiLinear(
-            numSteps: cfg.numSteps, inDim: cfg.dim, outDim: cfg.dim, bias: false))
+            numSteps: cfg.numSteps, inDim: cfg.dim, outDim: cfg.dim, bias: false,
+            groupSize: cfg.groupSize, bits: cfg.bits))
         self.scale = 1.0 / Float(Double(cfg.headDim).squareRoot())
     }
 
@@ -103,9 +138,11 @@ public final class DepformerFFN: Module {
     public init(cfg: DepformerConfig) {
         self.cfg = cfg
         self._linear_in = ModuleInfo(wrappedValue: MultiLinear(
-            numSteps: cfg.numSteps, inDim: cfg.dim, outDim: 2 * cfg.dimFeedforward, bias: false))
+            numSteps: cfg.numSteps, inDim: cfg.dim, outDim: 2 * cfg.dimFeedforward, bias: false,
+            groupSize: cfg.groupSize, bits: cfg.bits))
         self._linear_out = ModuleInfo(wrappedValue: MultiLinear(
-            numSteps: cfg.numSteps, inDim: cfg.dimFeedforward, outDim: cfg.dim, bias: false))
+            numSteps: cfg.numSteps, inDim: cfg.dimFeedforward, outDim: cfg.dim, bias: false,
+            groupSize: cfg.groupSize, bits: cfg.bits))
     }
 
     public func callAsFunction(_ xs: MLXArray, step: Int) -> MLXArray {
@@ -153,7 +190,8 @@ public final class Depformer: Module {
     @ModuleInfo public var layers: [DepformerLayer]
 
     // Per-codebook input projections: temporal dim -> depformer dim
-    @ModuleInfo public var depformer_in: [Linear]
+    // Typed as [Module] to support both Linear and QuantizedLinear
+    @ModuleInfo public var depformer_in: [Module]
 
     // Per-codebook embeddings for previous token
     // depformer_text_emb: text embedding for step 0
@@ -171,9 +209,11 @@ public final class Depformer: Module {
             (0..<cfg.numLayers).map { _ in DepformerLayer(cfg: cfg) })
 
         // Input projections: one per step (multi_linear mode)
-        var inProjs: [Linear] = []
+        // Uses makeLinear() to create QuantizedLinear when bits < 16
+        var inProjs: [Module] = []
         for _ in 0..<cfg.numSteps {
-            inProjs.append(Linear(temporalDim, cfg.dim, bias: false))
+            inProjs.append(makeLinear(temporalDim, cfg.dim, bias: false,
+                                      groupSize: cfg.groupSize, bits: cfg.bits))
         }
         self._depformer_in = ModuleInfo(wrappedValue: inProjs)
 
@@ -221,7 +261,7 @@ public final class Depformer: Module {
 
         for k in 0..<cfg.numSteps {
             // Project temporal hidden to depformer dim
-            var input = depformer_in[k](temporalHidden)  // [B, 1, depformerDim]
+            var input = applyLinear(depformer_in[k], temporalHidden)  // [B, 1, depformerDim]
 
             // Add previous token embedding
             if k == 0 {

@@ -219,53 +219,109 @@ public final class PersonaPlexModel: Module {
             pos += 1
         }
 
-        // 5. Autoregressive generation (full-duplex: agent generates while user speaks)
+        // 5. Batched prefill
         //
         // Phase layout:
-        //   steps 0..<voiceFrameCount:    voice prompt (embeddings only, no generation)
-        //   steps voiceFrameCount..<promptLen: silence + text prompt + silence (forward, no generation)
-        //   steps promptLen..<prefillLen:  user audio + simultaneous agent generation
-        //   steps prefillLen..<prefillLen+maxSteps: post-user generation (user=sine)
+        //   steps 0..<voiceFrameCount:    voice prompt (batched embeddings)
+        //   steps voiceFrameCount..<promptLen: silence + text + silence (batched tokens)
+        //   steps promptLen..<prefillLen:  user audio + simultaneous agent generation (per-step)
+        //   steps prefillLen..<prefillLen+maxSteps: post-user generation (per-step)
         var agentTokens: [[Int32]] = Array(repeating: [], count: cfg.depformer.numSteps)
         let genStart = CFAbsoluteTimeGetCurrent()
-        let generationStartStep = promptLen  // Start generating when user audio begins
 
-        for step in 0..<(prefillLen + maxSteps) {
-            // --- Voice prompt: use pre-computed embeddings ---
-            if step < voiceFrameCount, let voiceEmb = voiceEmbeddings {
-                let emb = voiceEmb[step].reshaped([1, 1, cfg.temporal.dim])
-                temporal.forwardEmbedding(emb, offset: step)
-                continue
+        // --- Batch voice prompt ---
+        if let voiceEmb = voiceEmbeddings, voiceFrameCount > 0 {
+            // voiceEmb: [T, 1, 1, dim] → [1, T, dim]
+            let batchEmb = voiceEmb.reshaped([voiceFrameCount, cfg.temporal.dim])
+                .expandedDimensions(axis: 0)
+            temporal.forwardBatchEmbedding(batchEmb, offset: 0)
+        }
+
+        if verbose {
+            let vpTime = CFAbsoluteTimeGetCurrent() - genStart
+            print("  Voice prefill: \(voiceFrameCount) frames batched (\(String(format: "%.2f", vpTime))s)")
+        }
+
+        // --- Batch non-voice prefill (silence1 + text prompt + silence2) ---
+        let nonVoicePrefillLen = silenceFrameCount + textPromptLen + silenceFrameCount
+        if nonVoicePrefillLen > 0 {
+            var batchText = [Int32](repeating: 0, count: nonVoicePrefillLen)
+            var batchAudioFlat = [Int32](repeating: 0, count: (numStreams - 1) * nonVoicePrefillLen)
+
+            for t in 0..<nonVoicePrefillLen {
+                let globalStep = voiceFrameCount + t
+                let readIdx = globalStep > 0 ? globalStep - 1 : 0
+                batchText[t] = globalStep > 0 ? tokenCache[0][readIdx] : Int32(cfg.temporal.textPaddingId)
+                for stream in 1..<numStreams {
+                    let tok = globalStep > 0 ? tokenCache[stream][readIdx] : Int32(-1)
+                    batchAudioFlat[(stream - 1) * nonVoicePrefillLen + t] = tok
+                }
             }
 
+            let textArr = MLXArray(batchText).reshaped([1, nonVoicePrefillLen])
+            let audioArr = MLXArray(batchAudioFlat).reshaped([1, numStreams - 1, nonVoicePrefillLen])
+
+            let (prefillHidden, _) = temporal.forward(
+                textTokens: textArr,
+                audioTokens: audioArr,
+                offset: voiceFrameCount
+            )
+            eval(prefillHidden)  // populate KV caches
+        }
+
+        if verbose {
+            let pfTime = CFAbsoluteTimeGetCurrent() - genStart
+            print("  Total prefill: \(voiceFrameCount + nonVoicePrefillLen) steps batched (\(String(format: "%.2f", pfTime))s)")
+        }
+
+        // 6. Per-step generation loop (user audio + post-user)
+        //
+        // When compiled, we separate embedding computation (not compiled — uses Slice)
+        // from transformer layers (compiled — pure matmuls/attention).
+        let useCompiledStep = temporal.compiledStep != nil
+        let b = 1  // batch size
+
+        for step in promptLen..<(prefillLen + maxSteps) {
             // Build input tokens for this step.
             // Original Moshi reads (offset - 1) % CT — the PREVIOUS step's token.
-            // At step 0 there is no previous step, so read -1 (will be mapped to initial token).
-            let readIdx = step > 0 ? step - 1 : 0
-            let textTok = step > 0 ? tokenCache[0][readIdx] : Int32(cfg.temporal.textPaddingId)
+            let readIdx = step - 1
+            let textTok = tokenCache[0][readIdx]
             let textTokenArr = MLXArray([textTok]).reshaped([1, 1])
             var audioTokenArrs: [MLXArray] = []
             for stream in 1..<numStreams {
-                let tok = step > 0 ? tokenCache[stream][readIdx] : Int32(-1)
-                // Pass -1 through — TemporalTransformer zero-masks negative tokens
+                let tok = tokenCache[stream][readIdx]
                 audioTokenArrs.append(MLXArray([tok]))
             }
             let audioTokens = stacked(audioTokenArrs, axis: 0).reshaped([1, numStreams - 1, 1])
 
-            // Forward through temporal transformer
-            let (hidden, textLogits) = temporal.forward(
-                textTokens: textTokenArr,
-                audioTokens: audioTokens,
-                offset: step
-            )
-            eval(hidden, textLogits)
+            let hidden: MLXArray
+            let textLogits: MLXArray
 
-            // During silence/text prompt, skip sampling
-            if step < generationStartStep {
-                continue
+            if useCompiledStep {
+                // Compute embeddings (not compiled — uses per-stream Slice indexing)
+                var embSum = temporal.text_emb(textTokenArr)  // [1, 1, dim]
+                for i in 0..<cfg.temporal.numAudioEmbeddings {
+                    let rawTok = audioTokens[0..<b, i, 0..<1]
+                    let isValid = rawTok .>= MLXArray(Int32(0))
+                    let safeTok = MLX.maximum(rawTok, MLXArray(Int32(0)))
+                    let embResult = temporal.emb[i](safeTok)
+                    let mask = isValid.expandedDimensions(axis: -1)
+                    embSum = embSum + MLX.where(mask, embResult, MLXArray(Float(0)))
+                }
+
+                // Compiled transformer layers + out_norm + text_linear
+                (hidden, textLogits) = temporal.executeStep(hidden: embSum, offset: step)
+            } else {
+                // Uncompiled path: full forward
+                (hidden, textLogits) = temporal.forward(
+                    textTokens: textTokenArr,
+                    audioTokens: audioTokens,
+                    offset: step
+                )
             }
 
-            // Sample text token
+            // Sample text token — eval here forces textLogits (and hidden) computation.
+            // Depformer needs textToken value for embedding lookup.
             let textToken = sampleTopK(
                 logits: textLogits.squeezed(axis: 1),
                 temperature: cfg.sampling.textTemp,
@@ -312,7 +368,7 @@ public final class PersonaPlexModel: Module {
                     penalty: cfg.sampling.audioRepetitionPenalty
                 )
             }
-            eval(agentCodes)
+            // No eval barrier — .item() calls below trigger eval implicitly
 
             // Write generated tokens into cache at position `step` (NO delay).
             // Critical: In Python Moshi, process_transformer_output() writes ALL depformer
@@ -351,9 +407,9 @@ public final class PersonaPlexModel: Module {
 
         if verbose {
             let genTime = CFAbsoluteTimeGetCurrent() - genStart
-            let totalSteps = prefillLen + maxSteps
-            let msPerStep = genTime / Double(totalSteps) * 1000
-            print("  Generation: \(String(format: "%.2f", genTime))s, \(String(format: "%.1f", msPerStep))ms/step (\(totalSteps) steps, \(maxSteps) gen)")
+            let genSteps = userFrameCount + maxSteps
+            let msPerGenStep = genSteps > 0 ? genTime / Double(genSteps) * 1000 : 0
+            print("  Generation: \(String(format: "%.2f", genTime))s, \(String(format: "%.1f", msPerGenStep))ms/step (\(genSteps) gen steps)")
         }
 
         // 6. Decode agent tokens with Mimi
@@ -382,14 +438,11 @@ public final class PersonaPlexModel: Module {
             print("  Mimi decode: \(String(format: "%.2f", decTime))s")
         }
 
-        // Extract audio samples
+        // Extract audio samples (bulk copy — single GPU sync instead of per-sample)
         let numSamples = decoded.shape[2]
-        var samples = [Float](repeating: 0, count: numSamples)
         let flatDecoded = decoded.reshaped([numSamples])
         eval(flatDecoded)
-        for i in 0..<numSamples {
-            samples[i] = flatDecoded[i].item(Float.self)
-        }
+        let samples = flatDecoded.asArray(Float.self)
 
         if verbose {
             let totalTime = CFAbsoluteTimeGetCurrent() - startTime
@@ -398,6 +451,372 @@ public final class PersonaPlexModel: Module {
         }
 
         return samples
+    }
+
+    // MARK: - Streaming Inference
+
+    /// Audio chunk emitted during streaming generation.
+    public struct PersonaPlexAudioChunk: Sendable {
+        /// PCM samples at 24kHz mono
+        public let samples: [Float]
+        /// Sample rate (always 24000)
+        public let sampleRate: Int
+        /// Frame index of the first frame in this chunk
+        public let frameIndex: Int
+        /// True if this is the last chunk
+        public let isFinal: Bool
+        /// Elapsed time since generation started
+        public let elapsedTime: Double
+    }
+
+    /// Streaming configuration.
+    public struct PersonaPlexStreamingConfig: Sendable {
+        /// Frames to accumulate before first chunk emission
+        public var firstChunkFrames: Int
+        /// Frames to accumulate for subsequent chunks
+        public var chunkFrames: Int
+
+        public init(firstChunkFrames: Int = 25, chunkFrames: Int = 25) {
+            self.firstChunkFrames = firstChunkFrames
+            self.chunkFrames = chunkFrames
+        }
+
+        public static let `default` = PersonaPlexStreamingConfig()
+    }
+
+    /// Stream response audio in chunks during generation.
+    ///
+    /// Same pipeline as `respond()` but emits audio chunks incrementally via Mimi's
+    /// streaming decoder (`decodeStep()`), enabling playback before generation completes.
+    ///
+    /// - Parameters:
+    ///   - userAudio: [numSamples] float array of 24kHz mono audio
+    ///   - voice: voice preset for the agent
+    ///   - systemPromptTokens: SentencePiece-tokenized system prompt (nil = default)
+    ///   - maxSteps: maximum generation steps (at 12.5 Hz)
+    ///   - streaming: streaming configuration (chunk sizes)
+    ///   - verbose: print timing info
+    /// - Returns: AsyncThrowingStream of audio chunks
+    public func respondStream(
+        userAudio: [Float],
+        voice: PersonaPlexVoice = .NATM0,
+        systemPromptTokens: [Int32]? = nil,
+        maxSteps: Int = 500,
+        streaming: PersonaPlexStreamingConfig = .default,
+        verbose: Bool = false
+    ) -> AsyncThrowingStream<PersonaPlexAudioChunk, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let startTime = CFAbsoluteTimeGetCurrent()
+
+                    // 1. Encode user audio with Mimi
+                    let audioArray = MLXArray(userAudio).reshaped([1, 1, userAudio.count])
+                    let userCodes = mimi.encode(audioArray)
+                    eval(userCodes)
+                    let userFrameCount = userCodes.shape[2]
+
+                    // 2. Load voice prompt
+                    let voiceEmbeddings: MLXArray?
+                    let voiceCache: MLXArray?
+                    do {
+                        let modelDir = try HuggingFaceDownloader.getCacheDirectory(
+                            for: "aufklarer/PersonaPlex-7B-MLX-4bit")
+                        let voiceFile = modelDir.appendingPathComponent("voices")
+                            .appendingPathComponent("\(voice.rawValue).safetensors")
+                        if FileManager.default.fileExists(atPath: voiceFile.path) {
+                            let weights = try MLX.loadArrays(url: voiceFile)
+                            voiceEmbeddings = weights["embeddings"]
+                            voiceCache = weights["cache"]
+                        } else {
+                            voiceEmbeddings = nil; voiceCache = nil
+                        }
+                    } catch { voiceEmbeddings = nil; voiceCache = nil }
+
+                    let voiceFrameCount = voiceEmbeddings?.shape[0] ?? 0
+                    let silenceFrameCount = Int(0.5 * cfg.mimi.frameRate)
+                    let textPromptTokens = systemPromptTokens
+                        ?? TemporalTransformerConfig.defaultSystemPromptTokens
+                    let textPromptLen = textPromptTokens.count
+                    let delays = cfg.delays
+                    let maxDelay = cfg.maxDelay
+                    let numStreams = cfg.numStreams
+                    let nQ = cfg.temporal.nQ
+                    let promptLen = voiceFrameCount + silenceFrameCount + textPromptLen + silenceFrameCount
+                    let prefillLen = promptLen + userFrameCount
+                    let totalLen = prefillLen + maxSteps + maxDelay + 3
+
+                    // 3. Reset caches + initialize streaming decoder
+                    temporal.resetCache()
+                    mimi.resetState()
+                    let streamingDecoder = MimiStreamingDecoder(mimi)
+
+                    // 4. Initialize token cache (same as respond())
+                    var tokenCache = [[Int32]](
+                        repeating: [Int32](repeating: -1, count: totalLen), count: numStreams)
+
+                    // Fill token cache phases (voice, silence, text, silence, user audio)
+                    for t in 0..<voiceFrameCount {
+                        tokenCache[0][t + delays[0]] = Int32(cfg.temporal.textPaddingId)
+                        for cb in 0..<nQ {
+                            let s = 1 + cb
+                            tokenCache[s][t + delays[s]] = TemporalTransformerConfig.silenceTokens[cb]
+                        }
+                        for cb in 0..<nQ {
+                            let s = 1 + nQ + cb
+                            tokenCache[s][t + delays[s]] = TemporalTransformerConfig.sineTokens[cb]
+                        }
+                    }
+                    if let vc = voiceCache, voiceFrameCount > 0 {
+                        let CT = maxDelay + 3
+                        eval(vc)
+                        for s in 0..<numStreams {
+                            let d = delays[s]
+                            for k in 0...d {
+                                let flatPos = voiceFrameCount - 1 + k
+                                let ringPos = (voiceFrameCount + k) % CT
+                                if flatPos >= 0 && flatPos < totalLen {
+                                    tokenCache[s][flatPos] = Int32(vc[0, s, ringPos].item(Float.self))
+                                }
+                            }
+                        }
+                    }
+                    var pos = voiceFrameCount
+                    for _ in 0..<silenceFrameCount {
+                        tokenCache[0][pos + delays[0]] = Int32(cfg.temporal.textPaddingId)
+                        for cb in 0..<nQ {
+                            let s = 1 + cb
+                            tokenCache[s][pos + delays[s]] = TemporalTransformerConfig.silenceTokens[cb]
+                        }
+                        for cb in 0..<nQ {
+                            let s = 1 + nQ + cb
+                            tokenCache[s][pos + delays[s]] = TemporalTransformerConfig.sineTokens[cb]
+                        }
+                        pos += 1
+                    }
+                    for t in 0..<textPromptLen {
+                        tokenCache[0][pos + delays[0]] = textPromptTokens[t]
+                        for cb in 0..<nQ {
+                            let s = 1 + cb
+                            tokenCache[s][pos + delays[s]] = TemporalTransformerConfig.silenceTokens[cb]
+                        }
+                        for cb in 0..<nQ {
+                            let s = 1 + nQ + cb
+                            tokenCache[s][pos + delays[s]] = TemporalTransformerConfig.sineTokens[cb]
+                        }
+                        pos += 1
+                    }
+                    for _ in 0..<silenceFrameCount {
+                        tokenCache[0][pos + delays[0]] = Int32(cfg.temporal.textPaddingId)
+                        for cb in 0..<nQ {
+                            let s = 1 + cb
+                            tokenCache[s][pos + delays[s]] = TemporalTransformerConfig.silenceTokens[cb]
+                        }
+                        for cb in 0..<nQ {
+                            let s = 1 + nQ + cb
+                            tokenCache[s][pos + delays[s]] = TemporalTransformerConfig.sineTokens[cb]
+                        }
+                        pos += 1
+                    }
+                    let userCodesArr = userCodes.asType(.int32); eval(userCodesArr)
+                    for t in 0..<userFrameCount {
+                        tokenCache[0][pos + delays[0]] = Int32(cfg.temporal.textPaddingId)
+                        for cb in 0..<nQ {
+                            let s = 1 + cb
+                            tokenCache[s][pos + delays[s]] = TemporalTransformerConfig.silenceTokens[cb]
+                        }
+                        for cb in 0..<min(nQ, userCodes.shape[1]) {
+                            let s = 1 + nQ + cb
+                            tokenCache[s][pos + delays[s]] = userCodesArr[0, cb, t].item(Int32.self)
+                        }
+                        pos += 1
+                    }
+
+                    // 5. Batched prefill (same as respond)
+                    if let voiceEmb = voiceEmbeddings, voiceFrameCount > 0 {
+                        let batchEmb = voiceEmb.reshaped([voiceFrameCount, cfg.temporal.dim])
+                            .expandedDimensions(axis: 0)
+                        temporal.forwardBatchEmbedding(batchEmb, offset: 0)
+                    }
+                    let nonVoicePrefillLen = silenceFrameCount + textPromptLen + silenceFrameCount
+                    if nonVoicePrefillLen > 0 {
+                        var batchText = [Int32](repeating: 0, count: nonVoicePrefillLen)
+                        var batchAudioFlat = [Int32](
+                            repeating: 0, count: (numStreams - 1) * nonVoicePrefillLen)
+                        for t in 0..<nonVoicePrefillLen {
+                            let globalStep = voiceFrameCount + t
+                            let readIdx = globalStep > 0 ? globalStep - 1 : 0
+                            batchText[t] = globalStep > 0
+                                ? tokenCache[0][readIdx] : Int32(cfg.temporal.textPaddingId)
+                            for stream in 1..<numStreams {
+                                let tok = globalStep > 0 ? tokenCache[stream][readIdx] : Int32(-1)
+                                batchAudioFlat[(stream - 1) * nonVoicePrefillLen + t] = tok
+                            }
+                        }
+                        let textArr = MLXArray(batchText).reshaped([1, nonVoicePrefillLen])
+                        let audioArr = MLXArray(batchAudioFlat)
+                            .reshaped([1, numStreams - 1, nonVoicePrefillLen])
+                        let (ph, _) = temporal.forward(
+                            textTokens: textArr, audioTokens: audioArr, offset: voiceFrameCount)
+                        eval(ph)
+                    }
+
+                    if verbose {
+                        let pfTime = CFAbsoluteTimeGetCurrent() - startTime
+                        print("  Stream prefill: \(String(format: "%.2f", pfTime))s")
+                    }
+
+                    // 6. Generation loop with streaming decode
+                    var agentTokens: [[Int32]] = Array(repeating: [], count: cfg.depformer.numSteps)
+                    var pendingCodes: [[Int32]] = Array(repeating: [], count: nQ)
+                    var totalEmittedFrames = 0
+                    let useCompiledStep = temporal.compiledStep != nil
+                    let b = 1
+                    let genStart = CFAbsoluteTimeGetCurrent()
+
+                    for step in promptLen..<(prefillLen + maxSteps) {
+                        let readIdx = step - 1
+                        let textTok = tokenCache[0][readIdx]
+                        let textTokenArr = MLXArray([textTok]).reshaped([1, 1])
+                        var audioTokenArrs: [MLXArray] = []
+                        for stream in 1..<numStreams {
+                            audioTokenArrs.append(MLXArray([tokenCache[stream][readIdx]]))
+                        }
+                        let audioTokens = stacked(audioTokenArrs, axis: 0)
+                            .reshaped([1, numStreams - 1, 1])
+
+                        let hidden: MLXArray
+                        let textLogits: MLXArray
+                        if useCompiledStep {
+                            var embSum = temporal.text_emb(textTokenArr)
+                            for i in 0..<cfg.temporal.numAudioEmbeddings {
+                                let rawTok = audioTokens[0..<b, i, 0..<1]
+                                let isValid = rawTok .>= MLXArray(Int32(0))
+                                let safeTok = MLX.maximum(rawTok, MLXArray(Int32(0)))
+                                let embResult = temporal.emb[i](safeTok)
+                                let mask = isValid.expandedDimensions(axis: -1)
+                                embSum = embSum + MLX.where(mask, embResult, MLXArray(Float(0)))
+                            }
+                            (hidden, textLogits) = temporal.executeStep(
+                                hidden: embSum, offset: step)
+                        } else {
+                            (hidden, textLogits) = temporal.forward(
+                                textTokens: textTokenArr, audioTokens: audioTokens, offset: step)
+                        }
+
+                        let textToken = sampleTopK(
+                            logits: textLogits.squeezed(axis: 1),
+                            temperature: cfg.sampling.textTemp,
+                            topK: cfg.sampling.textTopK)
+                        eval(textToken)
+
+                        var providedTokens: [Int32]? = nil
+                        if step < prefillLen {
+                            var provided = [Int32](repeating: -1, count: cfg.depformer.numSteps)
+                            for cb in 0..<nQ {
+                                let userStreamIdx = 1 + nQ + cb
+                                if step < totalLen {
+                                    let tok = tokenCache[userStreamIdx][step]
+                                    if tok >= 0 { provided[nQ + cb] = tok }
+                                }
+                            }
+                            providedTokens = provided
+                        }
+
+                        let agentCodes = depformer.generate(
+                            temporalHidden: hidden, textToken: textToken,
+                            providedTokens: providedTokens
+                        ) { logits, cbIdx in
+                            let history = Array(agentTokens[cbIdx].suffix(
+                                cfg.sampling.repetitionWindow))
+                            return sampleTopKWithPenalty(
+                                logits: logits, temperature: cfg.sampling.audioTemp,
+                                topK: cfg.sampling.audioTopK, pastTokens: history,
+                                penalty: cfg.sampling.audioRepetitionPenalty)
+                        }
+
+                        // Extract tokens and write to cache
+                        let textVal = textToken[0].item(Int32.self)
+                        if step < totalLen { tokenCache[0][step] = textVal }
+                        let agentArr = agentCodes[0]
+                        for cb in 0..<nQ {
+                            let tok = agentArr[cb].item(Int32.self)
+                            if step < totalLen { tokenCache[1 + cb][step] = tok }
+                            agentTokens[cb].append(tok)
+                            pendingCodes[cb].append(tok)
+                        }
+                        for cb in nQ..<cfg.depformer.numSteps {
+                            let tok = agentArr[cb].item(Int32.self)
+                            if step >= prefillLen && step < totalLen {
+                                tokenCache[1 + cb][step] = tok
+                            }
+                            agentTokens[cb].append(tok)
+                        }
+
+                        // Emit chunk when enough frames accumulated
+                        let threshold = totalEmittedFrames == 0
+                            ? streaming.firstChunkFrames : streaming.chunkFrames
+                        if pendingCodes[0].count >= threshold {
+                            let chunkFrames = pendingCodes[0].count
+                            let flatCodes = pendingCodes.flatMap { $0 }
+                            let codesArr = MLXArray(flatCodes)
+                                .reshaped([1, nQ, chunkFrames])
+                            let decoded = streamingDecoder.decodeFrames(codesArr)
+                            eval(decoded)
+                            let flat = decoded.reshaped([decoded.shape[2]])
+                            let samples = flat.asArray(Float.self)
+
+                            let elapsed = CFAbsoluteTimeGetCurrent() - genStart
+                            continuation.yield(PersonaPlexAudioChunk(
+                                samples: samples,
+                                sampleRate: cfg.sampleRate,
+                                frameIndex: totalEmittedFrames,
+                                isFinal: false,
+                                elapsedTime: elapsed))
+
+                            if verbose {
+                                print("  Chunk: \(samples.count) samples at frame \(totalEmittedFrames) (\(String(format: "%.2f", elapsed))s)")
+                            }
+
+                            totalEmittedFrames += chunkFrames
+                            pendingCodes = Array(repeating: [], count: nQ)
+                        }
+                    }
+
+                    // Final chunk with remaining frames
+                    if !pendingCodes[0].isEmpty {
+                        let chunkFrames = pendingCodes[0].count
+                        let flatCodes = pendingCodes.flatMap { $0 }
+                        let codesArr = MLXArray(flatCodes).reshaped([1, nQ, chunkFrames])
+                        let decoded = streamingDecoder.decodeFrames(codesArr)
+                        eval(decoded)
+                        let flat = decoded.reshaped([decoded.shape[2]])
+                        let samples = flat.asArray(Float.self)
+
+                        let elapsed = CFAbsoluteTimeGetCurrent() - genStart
+                        continuation.yield(PersonaPlexAudioChunk(
+                            samples: samples,
+                            sampleRate: cfg.sampleRate,
+                            frameIndex: totalEmittedFrames,
+                            isFinal: true,
+                            elapsedTime: elapsed))
+
+                        if verbose {
+                            print("  Final chunk: \(samples.count) samples (\(String(format: "%.2f", elapsed))s)")
+                        }
+                    }
+
+                    if verbose {
+                        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+                        print("  Stream total: \(String(format: "%.2f", totalTime))s")
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Diagnostic Info
@@ -592,7 +1011,7 @@ public final class PersonaPlexModel: Module {
                     topK: cfg.sampling.audioTopK, pastTokens: history,
                     penalty: cfg.sampling.audioRepetitionPenalty)
             }
-            eval(agentCodes)
+            // No eval barrier — .item() calls below trigger eval implicitly
 
             // Write at position `step` (no delay) — matches Python's target_position
             if step < totalLen { tokenCache[0][step] = textVal }
@@ -623,10 +1042,8 @@ public final class PersonaPlexModel: Module {
         let codesArr = MLXArray(flatCodes).reshaped([1, numDecodeCodebooks, numAgentFrames])
         let decoded = mimi.decode(codesArr)
         eval(decoded)
-        let numSamples = decoded.shape[2]
-        var samples = [Float](repeating: 0, count: numSamples)
-        let flatDecoded = decoded.reshaped([numSamples]); eval(flatDecoded)
-        for i in 0..<numSamples { samples[i] = flatDecoded[i].item(Float.self) }
+        let flatDecoded = decoded.reshaped([decoded.shape[2]]); eval(flatDecoded)
+        let samples = flatDecoded.asArray(Float.self)
 
         return (samples, diag)
     }
@@ -664,16 +1081,28 @@ public final class PersonaPlexModel: Module {
            let data = try? Data(contentsOf: configFile),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let quant = json["quantization"] as? [String: Any] {
+            // Temporal quantization (always present when quantization section exists)
+            let quantizedComponents = quant["quantized_components"] as? [String] ?? []
             if let bits = quant["bits"] as? Int {
                 cfg.temporal.bits = bits
             }
             if let groupSize = quant["group_size"] as? Int {
                 cfg.temporal.groupSize = groupSize
             }
+            // Depformer quantization (if listed in quantized_components)
+            if quantizedComponents.contains("depformer") {
+                cfg.depformer.bits = quant["bits"] as? Int ?? 4
+                cfg.depformer.groupSize = quant["group_size"] as? Int ?? 64
+            } else {
+                cfg.depformer.bits = 16
+                cfg.depformer.groupSize = 1
+            }
         } else {
             // No quantization section → BF16
             cfg.temporal.bits = 16
             cfg.temporal.groupSize = 1
+            cfg.depformer.bits = 16
+            cfg.depformer.groupSize = 1
         }
         let model = PersonaPlexModel(cfg: cfg)
 
@@ -698,5 +1127,34 @@ public final class PersonaPlexModel: Module {
         model.train(false)
         progressHandler?(1.0, "PersonaPlex ready")
         return model
+    }
+
+    // MARK: - Compilation & Warmup
+
+    /// Set up compiled temporal transformer for Metal kernel fusion (~30% speedup).
+    /// Call after loading weights. Gracefully falls back to uncompiled on failure.
+    public func setupCompilation() {
+        temporal.setupCompilation()
+    }
+
+    /// Run warmup forward passes to trace the compiled graph and JIT-compile Metal shaders.
+    /// This eliminates first-inference latency from shader compilation.
+    public func warmUp() {
+        setupCompilation()
+
+        // Run a single compiled step to trace the graph
+        temporal.resetCache()
+
+        // First, do a prefill to initialize KV caches (compiled step needs non-empty cache)
+        let dummyText = MLXArray([Int32(3)]).reshaped([1, 1])
+        let dummyAudio = MLXArray.zeros([1, cfg.temporal.numAudioEmbeddings, 1], dtype: .int32)
+        let (_, _) = temporal.forward(textTokens: dummyText, audioTokens: dummyAudio, offset: 0)
+
+        // Now run a compiled step
+        let dummyEmb = MLXArray.zeros([1, 1, cfg.temporal.dim])
+        let (normed, logits) = temporal.executeStep(hidden: dummyEmb, offset: 1)
+        eval(normed, logits)
+
+        temporal.resetCache()
     }
 }

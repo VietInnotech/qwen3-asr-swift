@@ -4,7 +4,7 @@ Convert PersonaPlex 7B weights to 4-bit quantized safetensors for Swift/MLX.
 
 Downloads from nvidia/personaplex-7b-v1 and splits into:
   - temporal.safetensors   (4-bit quantized, ~3.5 GB)
-  - depformer.safetensors  (BF16, ~50 MB)
+  - depformer.safetensors  (4-bit quantized, ~650 MB)
   - embeddings.safetensors (BF16, ~500 MB)
   - mimi.safetensors       (from tokenizer file, ~385 MB)
   - voices/                (per-voice safetensors)
@@ -128,6 +128,13 @@ TEMPORAL_QUANTIZE_SUFFIXES = {
     "linear_in", "linear_out",   # FFN (SwiGLU)
 }
 
+# Depformer linear layers to quantize (same suffixes as temporal, plus depformer_in)
+DEPFORMER_QUANTIZE_SUFFIXES = {
+    "in_proj", "out_proj",       # Attention (MultiLinear packed)
+    "linear_in", "linear_out",   # FFN (per-step, packed later)
+}
+
+
 
 def classify_key(key: str):
     """Classify a model.safetensors key into temporal/depformer/embedding."""
@@ -161,6 +168,44 @@ def should_quantize_temporal(key: str, tensor: torch.Tensor) -> bool:
     if key.endswith("_weight"):
         stem = key.rsplit(".", 1)[-1].replace("_weight", "")
         if stem in TEMPORAL_QUANTIZE_SUFFIXES:
+            return True
+
+    return False
+
+
+def should_quantize_depformer(key: str, tensor: torch.Tensor) -> bool:
+    """Check if a depformer key should be 4-bit quantized.
+
+    Quantizes:
+    - Attention in_proj/out_proj (MultiLinear packed: [numSteps*outDim, inDim])
+    - FFN linear_in/linear_out (per-step: [outDim, inDim])
+    - depformer_in.{i}.weight (per-step input projection: [depDim, temporalDim])
+
+    Does NOT quantize:
+    - Embeddings (lookup tables)
+    - Output heads (linears.{i}.weight — small)
+    - Norms (1-D)
+    """
+    if tensor.ndim != 2:
+        return False
+    rows, cols = tensor.shape
+    if cols % 64 != 0:
+        return False
+
+    # depformer_in.{i}.weight — per-step input projections
+    if key.startswith("depformer_in.") and key.endswith(".weight"):
+        return True
+
+    # Standard submodule weight: e.g. "layers.0.self_attn.out_proj.weight"
+    if key.endswith(".weight"):
+        parts = key.rsplit(".", 2)
+        if len(parts) >= 2 and parts[-2] in DEPFORMER_QUANTIZE_SUFFIXES:
+            return True
+
+    # Flat packed param: e.g. "layers.0.self_attn.in_proj_weight"
+    if key.endswith("_weight"):
+        stem = key.rsplit(".", 1)[-1].replace("_weight", "")
+        if stem in DEPFORMER_QUANTIZE_SUFFIXES:
             return True
 
     return False
@@ -253,8 +298,9 @@ def convert_temporal(state_dict: dict, quantize: bool, group_size: int = 64, bit
     return output, param_count
 
 
-def convert_depformer(state_dict: dict):
-    """Convert depformer weights (kept in BF16)."""
+def convert_depformer(state_dict: dict, quantize: bool = True,
+                      group_size: int = 64, bits: int = 4):
+    """Convert and optionally quantize depformer weights."""
     output = {}
     param_count = 0
 
@@ -263,10 +309,24 @@ def convert_depformer(state_dict: dict):
         numel = tensor.numel()
         param_count += numel
 
-        if tensor.dtype in (torch.float32, torch.float64):
-            tensor = tensor.to(torch.bfloat16)
-        output[new_key] = tensor
-        print(f"  {key} -> {new_key} {list(tensor.shape)} {tensor.dtype}")
+        if quantize and should_quantize_depformer(new_key, tensor):
+            packed, scales, biases = quantize_nbit(tensor, group_size, bits=bits)
+            # Handle both "foo.weight" and "foo_weight" naming for quantized keys
+            if new_key.endswith("_weight"):
+                base = new_key[:-len("_weight")]
+                output[new_key] = packed
+                output[base + "_scales"] = scales
+                output[base + "_biases"] = biases
+            else:
+                output[new_key] = packed
+                output[new_key.replace(".weight", ".scales")] = scales
+                output[new_key.replace(".weight", ".biases")] = biases
+            print(f"  [Q{bits}] {key} -> {new_key} {list(packed.shape)} uint32")
+        else:
+            if tensor.dtype in (torch.float32, torch.float64):
+                tensor = tensor.to(torch.bfloat16)
+            output[new_key] = tensor
+            print(f"  {key} -> {new_key} {list(tensor.shape)} {tensor.dtype}")
 
     return output, param_count
 
@@ -384,7 +444,7 @@ def make_config(voice_names: list):
         "quantization": {
             "bits": 4,
             "group_size": 64,
-            "quantized_components": ["temporal"],
+            "quantized_components": ["temporal", "depformer"],
         },
 
         "voices": voice_names,
@@ -533,9 +593,13 @@ def main():
     # Convert depformer
     # -----------------------------------------------------------------------
     print(f"\n{'='*60}")
-    print("Converting depformer (BF16)...")
+    if quantize:
+        print(f"Converting depformer ({bits}-bit)...")
+    else:
+        print("Converting depformer (BF16)...")
     print(f"{'='*60}")
-    depformer_out, depformer_params = convert_depformer(depformer_weights)
+    depformer_out, depformer_params = convert_depformer(
+        depformer_weights, quantize=quantize, group_size=args.group_size, bits=bits)
     depformer_path = output_dir / "depformer.safetensors"
     save_file(tensors_to_numpy(depformer_out), str(depformer_path))
     depformer_size = os.path.getsize(str(depformer_path)) / (1024 * 1024)
@@ -563,6 +627,9 @@ def main():
     config = make_config(voice_names)
     if args.no_quantize:
         config.pop("quantization", None)
+    elif args.bits != 4 or args.group_size != 64:
+        config["quantization"]["bits"] = args.bits
+        config["quantization"]["group_size"] = args.group_size
     config_path = output_dir / "config.json"
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)

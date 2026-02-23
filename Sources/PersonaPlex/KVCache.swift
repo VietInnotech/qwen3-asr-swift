@@ -20,6 +20,16 @@ public final class KVCacheSimple: KVCache {
 
     public var offset: Int { keys?.shape[2] ?? 0 }
 
+    /// Read-only access to cache arrays (for compiled step functions).
+    public var keysArray: MLXArray? { keys }
+    public var valuesArray: MLXArray? { values }
+
+    /// Replace cache arrays wholesale (for compiled step functions that return new arrays).
+    public func replaceArrays(keys newK: MLXArray, values newV: MLXArray) {
+        keys = newK
+        values = newV
+    }
+
     public func update(keys newK: MLXArray, values newV: MLXArray) -> (MLXArray, MLXArray) {
         if let k = keys, let v = values {
             keys = concatenated([k, newK], axis: 2)

@@ -84,14 +84,11 @@ public struct TemporalTransformerConfig: Sendable {
     /// Constant silence tokens (used for agent audio during silence/text prompt phases)
     public static let silenceTokens: [Int32] = [948, 243, 1178, 546, 1736, 1030, 1978, 2008]
 
-    /// Default system prompt: "<system> You are a helpful assistant. Listen carefully to what the user says,
-    /// then respond directly to their question or request. Stay on topic. Be concise. <system>"
+    /// Default system prompt: "<system> You are a helpful assistant. Answer questions clearly and concisely. <system>"
     /// Pre-tokenized with SentencePiece (tokenizer_spm_32k_3.model)
     public static let defaultSystemPromptTokens: [Int32] = [
         607, 4831, 578, 493, 298, 272, 3850, 5019, 263,
-        17453, 6716, 269, 419, 262, 819, 1182, 261, 409,
-        4816, 1312, 269, 347, 560, 307, 2498, 263, 17308,
-        291, 3398, 263, 1451, 22876, 263, 607, 4831, 578
+        506, 1292, 2366, 267, 22876, 362, 263, 607, 4831, 578
     ]
 
     public init(
@@ -139,6 +136,8 @@ public struct DepformerConfig: Sendable {
     public var rmsNormEps: Float
     public var weightsPerStep: Bool // Each step uses different weights
     public var multiLinear: Bool    // Use multi-linear projections
+    public var groupSize: Int       // Quantization group size
+    public var bits: Int            // Quantization bits (4 = int4, 16 = BF16)
 
     /// Head dimension
     public var headDim: Int { dim / numHeads }
@@ -154,7 +153,9 @@ public struct DepformerConfig: Sendable {
         context: Int = 8,
         rmsNormEps: Float = 1e-8,
         weightsPerStep: Bool = true,
-        multiLinear: Bool = true
+        multiLinear: Bool = true,
+        groupSize: Int = 64,
+        bits: Int = 4
     ) {
         self.dim = dim
         self.numLayers = numLayers
@@ -167,6 +168,8 @@ public struct DepformerConfig: Sendable {
         self.rmsNormEps = rmsNormEps
         self.weightsPerStep = weightsPerStep
         self.multiLinear = multiLinear
+        self.groupSize = groupSize
+        self.bits = bits
     }
 
     public static var `default`: DepformerConfig { DepformerConfig() }
@@ -371,8 +374,8 @@ public enum SystemPromptPreset: String, CaseIterable, Sendable {
 
     public var description: String {
         switch self {
-        case .focused: return "Focused responder — stays on topic, concise (default)"
-        case .assistant: return "General helpful assistant"
+        case .focused: return "Focused responder — stays on topic, concise"
+        case .assistant: return "General helpful assistant (default)"
         case .customerService: return "Customer service agent — direct, no topic changes"
         case .teacher: return "Friendly teacher — clear and engaging"
         }
