@@ -478,6 +478,84 @@ final class PersonaPlexE2ETests: XCTestCase {
         print("Streaming: \(chunkCount) chunks, \(allSamples.count) total samples, maxAmp=\(String(format: "%.4f", maxAmp))")
     }
 
+    /// Streaming E2E relevance test: real audio → PersonaPlex streaming → concatenate chunks → ASR → keyword check.
+    /// Same as testResponseRelevance but exercises the streaming path.
+    func testStreamingRelevance() async throws {
+        if Self._model == nil { try await testLoadModel() }
+        let ppModel = try self.model
+
+        let audioURL = findTestAudio()
+        guard let url = audioURL else {
+            throw XCTSkip("test_audio.wav not found — expected at Tests/Qwen3ASRTests/Resources/test_audio.wav")
+        }
+        let userAudio = try AudioFileLoader.load(url: url, targetSampleRate: 24000)
+        let inputDuration = Double(userAudio.count) / 24000.0
+        print("Input: \(String(format: "%.2f", inputDuration))s (\(userAudio.count) samples)")
+
+        // Stream PersonaPlex response (200 gen steps ≈ 16s at 12.5Hz)
+        let streamingConfig = PersonaPlexModel.PersonaPlexStreamingConfig(
+            firstChunkFrames: 25, chunkFrames: 25)
+        let stream = ppModel.respondStream(
+            userAudio: userAudio,
+            voice: .NATM0,
+            maxSteps: 200,
+            streaming: streamingConfig,
+            verbose: true
+        )
+
+        var allSamples: [Float] = []
+        var chunkCount = 0
+        for try await chunk in stream {
+            XCTAssertFalse(chunk.samples.isEmpty, "Chunk should contain samples")
+            XCTAssertEqual(chunk.sampleRate, 24000)
+            allSamples.append(contentsOf: chunk.samples)
+            chunkCount += 1
+            let chunkDur = String(format: "%.2f", Double(chunk.samples.count) / 24000.0)
+            print("  Stream chunk \(chunkCount): \(chunk.samples.count) samples (\(chunkDur)s), final=\(chunk.isFinal)")
+        }
+        let responseDuration = Double(allSamples.count) / 24000.0
+        print("Streaming response: \(chunkCount) chunks, \(String(format: "%.2f", responseDuration))s total")
+
+        XCTAssertGreaterThan(chunkCount, 1, "Should produce multiple chunks")
+        XCTAssertFalse(allSamples.isEmpty, "Should produce audio samples")
+
+        // Transcribe concatenated audio with ASR
+        let asrModel = try await Qwen3ASRModel.fromPretrained()
+        let resampled = resampleLinear(allSamples, fromRate: 24000, toRate: 16000)
+        let transcript = asrModel.transcribe(audio: resampled, sampleRate: 16000)
+        print("Streaming transcript: \"\(transcript)\"")
+
+        // --- Relevance assertions (same as testResponseRelevance) ---
+        let lower = transcript.lowercased()
+
+        // 1. Non-empty, meaningful speech (at least 5 words)
+        let words = lower.split(separator: " ").map(String.init)
+        XCTAssertGreaterThan(words.count, 5,
+            "Response should contain at least 5 words, got \(words.count): \"\(transcript)\"")
+
+        // 2. Topic relevance: shipping/logistics keywords
+        let shippingKeywords = [
+            "ship", "shipping", "shipped", "delivery", "deliver", "delivered",
+            "tomorrow", "order", "replacement", "part", "guarantee",
+            "days", "today", "estimate", "tracking", "package", "send", "sent",
+            "arrive", "arrival", "dispatch", "stock", "available", "warehouse"
+        ]
+        let matchedKeywords = shippingKeywords.filter { kw in lower.contains(kw) }
+        print("Matched shipping keywords: \(matchedKeywords)")
+        XCTAssertGreaterThanOrEqual(matchedKeywords.count, 1,
+            "Response should mention at least 1 shipping-related keyword. Transcript: \"\(transcript)\"")
+
+        // 3. No excessive repetition
+        let maxConsecutive = maxConsecutiveRepeats(in: words)
+        XCTAssertLessThan(maxConsecutive, 4,
+            "Response has degenerate repetition (\(maxConsecutive) consecutive repeated words)")
+
+        // 4. Word diversity
+        let uniqueRatio = Double(Set(words).count) / Double(max(words.count, 1))
+        XCTAssertGreaterThan(uniqueRatio, 0.3,
+            "Response word diversity too low (\(String(format: "%.0f", uniqueRatio * 100))%): \"\(transcript)\"")
+    }
+
     // MARK: - Response Relevance Tests
 
     /// E2E relevance test: real audio → PersonaPlex → ASR → keyword check.
