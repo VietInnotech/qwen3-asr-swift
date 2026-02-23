@@ -18,13 +18,13 @@ Papers: [Qwen3-ASR](https://arxiv.org/abs/2601.21337), [Qwen3-TTS](https://arxiv
 | Qwen3-TTS-0.6B Base (4-bit) | Text → Speech | Yes (~120ms) | 10 languages | ~1.7 GB |
 | Qwen3-TTS-0.6B CustomVoice (4-bit) | Text → Speech | Yes (~120ms) | 10 languages | ~1.7 GB |
 | CosyVoice3-0.5B (4-bit) | Text → Speech | Yes (~150ms) | 9 languages | ~1.9 GB |
-| PersonaPlex-7B (4-bit) | Speech → Speech | No | EN | ~7.1 GB |
+| PersonaPlex-7B (4-bit) | Speech → Speech | Yes (~2s chunks) | EN | ~5.3 GB |
 
 ### When to Use Which TTS
 
 - **Qwen3-TTS**: Best quality, streaming (~120ms), 9 built-in speakers, 10 languages, batch synthesis
 - **CosyVoice TTS**: Streaming (~150ms), 9 languages, DiT flow matching + HiFi-GAN vocoder
-- **PersonaPlex**: Full-duplex speech-to-speech (audio in → audio out), 18 voice presets, based on Moshi architecture
+- **PersonaPlex**: Full-duplex speech-to-speech (audio in → audio out), streaming (~2s chunks), 18 voice presets, based on Moshi architecture
 
 ## Installation
 
@@ -257,6 +257,17 @@ let response = model.respond(userAudio: audio, voice: .NATM0)
 try WAVWriter.write(samples: response, sampleRate: 24000, to: outputURL)
 ```
 
+### Streaming Speech-to-Speech
+
+```swift
+// Receive audio chunks as they're generated (~2s per chunk)
+let stream = model.respondStream(userAudio: audio, voice: .NATM0)
+for try await chunk in stream {
+    playAudio(chunk.samples)  // play immediately, 24kHz mono
+    if chunk.isFinal { break }
+}
+```
+
 ### Voice Selection
 
 18 voice presets available:
@@ -285,11 +296,11 @@ Available presets: `focused` (default), `assistant`, `customerService`, `teacher
 ```bash
 swift build -c release
 
-# Basic speech-to-speech (uses "focused" prompt by default)
+# Basic speech-to-speech
 .build/release/personaplex-cli --input question.wav --output response.wav
 
-# Choose a voice and system prompt
-.build/release/personaplex-cli --input question.wav --voice NATF1 --system-prompt customer-service --output response.wav
+# Choose a voice and system prompt preset
+.build/release/personaplex-cli --input question.wav --voice NATF1 --system-prompt focused --output response.wav
 
 # List available voices and prompts
 .build/release/personaplex-cli --list-voices
@@ -358,9 +369,9 @@ swift build -c release
 
 | Model | Framework | ms/step | RTF | Notes |
 |-------|-----------|---------|-----|-------|
-| PersonaPlex-7B (4-bit) | MLX Swift (release) | ~78ms | ~5.0 | 20s input → 36s output in ~180s |
+| PersonaPlex-7B (4-bit) | MLX Swift (release) | ~68ms | ~0.87 | 20s input → 36s output in ~31s |
 
-> PersonaPlex runs at ~78ms/step — just under the 80ms real-time threshold at 12.5 Hz. Currently offline-only; prefill batching and compiled inference could significantly reduce RTF.
+> PersonaPlex runs at ~68ms/step — well under the 80ms real-time threshold at 12.5 Hz, achieving **faster-than-real-time** inference (RTF < 1.0). Both temporal transformer and depformer are 4-bit quantized.
 
 RTF = Real-Time Factor (lower is better, < 1.0 = faster than real-time).
 

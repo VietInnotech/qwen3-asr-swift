@@ -789,8 +789,9 @@ final class PersonaPlexE2ETests: XCTestCase {
         print("  Text argmax: \(textTok[0].item(Int32.self))")
 
         // Run depformer with argmax sampling (temperature=0)
-        let expectedArgmax: [Int32] = [1676, 1515, 1626, 1562, 306, 478, 326, 101,
-                                        768, 243, 1178, 417, 1736, 478, 1334, 274]
+        // Reference values from 4-bit quantized depformer
+        let expectedArgmax: [Int32] = [653, 1515, 1626, 1562, 306, 478, 326, 101,
+                                       1031, 1211, 783, 546, 267, 478, 1334, 274]
 
         let agentCodes = depformer.generate(
             temporalHidden: normedHidden,

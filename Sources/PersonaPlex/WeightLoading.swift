@@ -150,9 +150,12 @@ public enum PersonaPlexWeightLoader {
 
     /// Sanitize depformer weights:
     /// - Rename `*.alpha` (1,1,D) → `*.weight` (D)
-    /// - Rename `*.in_proj_weight` → `*.in_proj.weight`
-    /// - Pack per-step FFN weights into MultiLinear format:
+    /// - Rename `*.in_proj_weight` → `*.in_proj.weight` (+ _scales/_biases when quantized)
+    /// - Rename `*.out_proj_weight` → `*.out_proj.weight` (+ _scales/_biases when quantized)
+    /// - Pack per-step FFN weights/scales/biases into MultiLinear format:
     ///   `gating.{step}.linear_in.weight` → concatenated `gating.linear_in.weight`
+    ///   `gating.{step}.linear_in.scales` → concatenated `gating.linear_in.scales`
+    ///   `gating.{step}.linear_in.biases` → concatenated `gating.linear_in.biases`
     private static func sanitizeDepformerWeights(
         _ weights: [String: MLXArray],
         numSteps: Int
@@ -174,21 +177,25 @@ public enum PersonaPlexWeightLoader {
                 continue
             }
 
-            // Attention in_proj: flat param → submodule
-            var matchedInProj = false
-            for suffix in ["_weight", "_scales", "_biases"] {
-                let needle = ".in_proj" + suffix
-                if key.hasSuffix(needle) {
-                    let dotSuffix = "." + String(suffix.dropFirst())
-                    newKey = String(key.dropLast(needle.count)) + ".in_proj" + dotSuffix
-                    out[newKey] = newValue
-                    matchedInProj = true
-                    break
+            // Attention in_proj/out_proj: flat param → submodule
+            // Handles _weight, _scales, _biases suffixes for quantized weights
+            var matchedProj = false
+            for projName in ["in_proj", "out_proj"] {
+                for suffix in ["_weight", "_scales", "_biases"] {
+                    let needle = "." + projName + suffix
+                    if key.hasSuffix(needle) {
+                        let dotSuffix = "." + String(suffix.dropFirst())
+                        newKey = String(key.dropLast(needle.count)) + "." + projName + dotSuffix
+                        out[newKey] = newValue
+                        matchedProj = true
+                        break
+                    }
                 }
+                if matchedProj { break }
             }
-            if matchedInProj { continue }
+            if matchedProj { continue }
 
-            // Per-step FFN: detect gating.{step}.linear_in/out.weight pattern
+            // Per-step FFN: detect gating.{step}.linear_in/out.weight/scales/biases pattern
             if let match = parsePerStepGatingKey(key) {
                 perStepWeights[match.packedKey, default: []].append((match.step, value))
                 continue
@@ -240,7 +247,7 @@ public enum PersonaPlexWeightLoader {
               parts[2] == "gating",
               let step = Int(parts[3]),
               (parts[4] == "linear_in" || parts[4] == "linear_out"),
-              parts[5] == "weight"
+              (parts[5] == "weight" || parts[5] == "scales" || parts[5] == "biases")
         else { return nil }
 
         let packedKey = "\(parts[0]).\(parts[1]).\(parts[2]).\(parts[4]).\(parts[5])"

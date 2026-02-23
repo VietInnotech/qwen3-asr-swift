@@ -86,6 +86,37 @@ public final class TemporalAttention: Module {
         out = swappedAxes(out, 1, 2).reshaped([b, t, cfg.dim])
         return applyLinear(out_proj, out)
     }
+
+    /// Compile-compatible forward: takes explicit cache arrays + MLXArray offset.
+    /// For T=1 autoregressive steps only (no causal mask needed, no context limiting).
+    /// Returns (output, newK, newV) where newK/newV include the new entry.
+    public func forwardStep(
+        _ xs: MLXArray, offset: MLXArray,
+        cacheK: MLXArray, cacheV: MLXArray
+    ) -> (MLXArray, MLXArray, MLXArray) {
+        let qkv = applyLinear(in_proj, xs)
+        // T=1: [B, 1, 3*dim] → [B, 1, 3, H, D]
+        let qkvR = qkv.reshaped([-1, 1, 3, cfg.numHeads, cfg.headDim])
+
+        // Extract Q, K, V via split on axis 2 (avoids dynamic Slice)
+        let qkvParts = split(qkvR, parts: 3, axis: 2)
+        var q = qkvParts[0].squeezed(axis: 2).transposed(0, 2, 1, 3) // [B, H, 1, D]
+        var k = qkvParts[1].squeezed(axis: 2).transposed(0, 2, 1, 3)
+        let v = qkvParts[2].squeezed(axis: 2).transposed(0, 2, 1, 3)
+
+        q = rope(q, offset: offset)
+        k = rope(k, offset: offset)
+
+        // Concatenate with cache
+        let newK = concatenated([cacheK, k], axis: 2)
+        let newV = concatenated([cacheV, v], axis: 2)
+
+        // T=1 autoregressive: no causal mask needed
+        var out = MLXFast.scaledDotProductAttention(
+            queries: q, keys: newK, values: newV, scale: scale, mask: .none)
+        out = out.transposed(0, 2, 1, 3).reshaped([-1, 1, cfg.dim])
+        return (applyLinear(out_proj, out), newK, newV)
+    }
 }
 
 // MARK: - Temporal FFN (SiLU-gated / SwiGLU)
@@ -137,6 +168,18 @@ public final class TemporalTransformerLayer: Module {
         x = x + gating(norm2(x))
         return x
     }
+
+    /// Compile-compatible forward with explicit cache arrays.
+    public func forwardStep(
+        _ xs: MLXArray, offset: MLXArray,
+        cacheK: MLXArray, cacheV: MLXArray
+    ) -> (MLXArray, MLXArray, MLXArray) {
+        let (attnOut, newK, newV) = self_attn.forwardStep(
+            norm1(xs), offset: offset, cacheK: cacheK, cacheV: cacheV)
+        var x = xs + attnOut
+        x = x + gating(norm2(x))
+        return (x, newK, newV)
+    }
 }
 
 // MARK: - Temporal Transformer
@@ -155,6 +198,11 @@ public final class TemporalTransformer: Module {
     @ModuleInfo public var text_linear: Linear     // text logit head
 
     public private(set) var cache: [KVCacheSimple]
+
+    /// Compiled temporal step function for Metal kernel fusion.
+    /// Input: [hidden, offset, K0, V0, K1, V1, ..., K31, V31]
+    /// Output: [normed, textLogits, K0, V0, ..., K31, V31]
+    public private(set) var compiledStep: (([MLXArray]) -> [MLXArray])?
 
     public init(cfg: TemporalTransformerConfig) {
         self.cfg = cfg
@@ -183,10 +231,23 @@ public final class TemporalTransformer: Module {
         for c in cache { c.trim(c.offset) }
     }
 
-    /// Forward pass with pre-computed embedding (for voice prompt replay).
+    /// Forward pass with pre-computed embedding (for voice prompt replay, single step).
     /// Feeds the embedding through all layers to populate KV caches.
     public func forwardEmbedding(_ embedding: MLXArray, offset: Int) {
         var hidden = embedding  // [B, 1, dim]
+        for (layer, c) in zip(layers, cache) {
+            hidden = layer(hidden, cache: c, offset: offset)
+        }
+        eval(hidden)  // force evaluation to populate caches
+    }
+
+    /// Batched forward pass with pre-computed embeddings (for voice prompt replay).
+    /// Processes all T embeddings in a single pass with causal attention.
+    /// - Parameters:
+    ///   - embeddings: [B, T, dim] pre-computed embeddings for all voice frames
+    ///   - offset: RoPE offset for position 0 of this batch
+    public func forwardBatchEmbedding(_ embeddings: MLXArray, offset: Int) {
+        var hidden = embeddings  // [B, T, dim]
         for (layer, c) in zip(layers, cache) {
             hidden = layer(hidden, cache: c, offset: offset)
         }
@@ -229,5 +290,88 @@ public final class TemporalTransformer: Module {
         let textLogits = text_linear(normed)
 
         return (normed, textLogits)
+    }
+
+    // MARK: - Compiled Step (T=1 autoregressive)
+
+    /// Set up compiled temporal step for Metal kernel fusion.
+    /// Compiles the layer stack (no embedding) with explicit cache arrays.
+    /// Call after model weights are loaded.
+    public func setupCompilation() {
+        let selfRef = self
+        let numLayers = cfg.numLayers
+
+        compiledStep = compile(
+            inputs: [selfRef], outputs: [selfRef], shapeless: true
+        ) { inputs in
+            var hidden = inputs[0]           // [B, 1, dim] — pre-computed embedding sum
+            let offset = inputs[1]           // MLXArray scalar
+
+            // Pass through all layers with explicit cache
+            var outCache: [MLXArray] = []
+            for i in 0..<numLayers {
+                let cK = inputs[2 + i * 2]
+                let cV = inputs[3 + i * 2]
+                let (h, newK, newV) = selfRef.layers[i].forwardStep(
+                    hidden, offset: offset, cacheK: cK, cacheV: cV)
+                hidden = h
+                outCache.append(newK)
+                outCache.append(newV)
+            }
+
+            let normed = selfRef.out_norm(hidden)
+            let textLogits = selfRef.text_linear(normed)
+
+            var result = [normed, textLogits]
+            result.append(contentsOf: outCache)
+            return result
+        }
+    }
+
+    /// Execute a single autoregressive step through the compiled temporal transformer.
+    /// Manages KVCacheSimple objects, delegating to compiled function when available.
+    /// - Parameters:
+    ///   - hidden: [B, 1, dim] pre-computed embedding sum
+    ///   - offset: RoPE position offset
+    /// - Returns: (normedHidden [B, 1, dim], textLogits [B, 1, textCard])
+    public func executeStep(hidden: MLXArray, offset: Int) -> (MLXArray, MLXArray) {
+        guard let compiled = compiledStep else {
+            // Fallback: uncompiled path through layers
+            var h = hidden
+            for (layer, c) in zip(layers, cache) {
+                h = layer(h, cache: c, offset: offset)
+            }
+            let normed = out_norm(h)
+            let textLogits = text_linear(normed)
+            return (normed, textLogits)
+        }
+
+        // Build flat input array: [hidden, offset, K0, V0, ..., K31, V31]
+        let offsetArr = MLXArray(Int32(offset))
+        var flatInputs: [MLXArray] = [hidden, offsetArr]
+        for c in cache {
+            if let k = c.keysArray, let v = c.valuesArray {
+                flatInputs.append(k)
+                flatInputs.append(v)
+            } else {
+                // Cache empty — not yet initialized, fall back to uncompiled
+                var h = hidden
+                for (layer, c2) in zip(layers, cache) {
+                    h = layer(h, cache: c2, offset: offset)
+                }
+                let normed = out_norm(h)
+                let textLogits = text_linear(normed)
+                return (normed, textLogits)
+            }
+        }
+
+        let out = compiled(flatInputs)
+
+        // Update KVCacheSimple objects from compiled output
+        for i in 0..<cfg.numLayers {
+            cache[i].replaceArrays(keys: out[2 + i * 2], values: out[3 + i * 2])
+        }
+
+        return (out[0], out[1])
     }
 }

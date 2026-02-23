@@ -4,7 +4,7 @@
 
 PersonaPlex is NVIDIA's 7B parameter full-duplex speech-to-speech model built on Kyutai's [Moshi](https://github.com/kyutai-labs/moshi) architecture. It enables simultaneous listening and speaking with controllable voice and role.
 
-This implementation ports offline inference to Swift/MLX with 4-bit quantization (~3.5 GB for the temporal transformer).
+This implementation ports inference to Swift/MLX with 4-bit quantization (~3.5 GB temporal transformer, ~650 MB depformer), supporting both offline and streaming output.
 
 ## Architecture
 
@@ -47,7 +47,7 @@ This implementation ports offline inference to Swift/MLX with 4-bit quantization
 
 All embeddings are summed before entering the transformer.
 
-### Depformer (per-codebook weights)
+### Depformer (per-codebook weights, 4-bit quantized)
 - **Layers**: 6
 - **Dimension**: 1024
 - **Heads**: 16 (head_dim=64)
@@ -55,6 +55,7 @@ All embeddings are summed before entering the transformer.
 - **Context**: 8 tokens
 - **Steps**: 16 (expanded from 8 in base Moshi)
 - **No positional embedding** (depformer_pos_emb="none")
+- **Quantization**: 4-bit with group_size=64 (MultiLinear attention/FFN + input projections)
 
 **Key feature — MultiLinear**:
 Each attention and FFN layer uses `weights_per_step=True`, meaning separate weight matrices for each of the 16 codebook steps. Weights are stored as `[16 * outDim, inDim]` and sliced at runtime.
@@ -87,7 +88,7 @@ for k in 0..<16:
 **Example run** (M2 Max, 4-bit):
 - Input: "Can you guarantee that the replacement part will be shipped tomorrow?" (20s)
 - Output: "I can't promise a specific time, but we'll do our best to get it out tomorrow. It's one of the top priorities, so yes, we'll try to get it done as soon as possible and ship it first thing in the morning." (36s)
-- RTF: ~5.0 (offline inference, not yet optimized)
+- RTF: ~0.87 (faster than real-time, both transformers 4-bit quantized)
 
 ## Delay Pattern
 
@@ -111,16 +112,7 @@ Semantic codebooks (cb0) and text have no delay; acoustic codebooks (cb1-7) have
 
 PersonaPlex accepts a text system prompt that steers the model's behavior. Prompts are pre-tokenized with SentencePiece (`tokenizer_spm_32k_3.model`) and injected between silence spacers before the user audio.
 
-**Built-in presets:**
-
-| Preset | Prompt |
-|--------|--------|
-| `focused` (default) | "Listen carefully to what the user says, then respond directly to their question or request. Stay on topic. Be concise." |
-| `assistant` | "Answer questions clearly and concisely." |
-| `customer-service` | "Answer the customer question directly and helpfully. Do not change the subject." |
-| `teacher` | "Answer questions or provide advice in a clear and engaging way." |
-
-The prompt significantly affects output quality. Without focused instructions, the model tends to ramble off-topic. The `focused` preset keeps responses directly relevant to the user's question.
+Several built-in presets are available (`--list-prompts` to see all). The default is a general helpful assistant prompt. The prompt significantly affects output quality — without focused instructions, the model tends to ramble off-topic.
 
 ## Sampling
 
@@ -132,7 +124,7 @@ The prompt significantly affects output quality. Without focused instructions, t
 | File | Size | Contents |
 |------|------|----------|
 | `temporal.safetensors` | ~3.4 GB | 32-layer transformer (4-bit quantized, including in_proj QKV) |
-| `depformer.safetensors` | ~2.4 GB | 6-layer depformer with 16-step MultiLinear (BF16) |
+| `depformer.safetensors` | ~650 MB | 6-layer depformer with 16-step MultiLinear (4-bit quantized) |
 | `embeddings.safetensors` | ~943 MB | 17 embeddings + output heads (BF16) |
 | `mimi.safetensors` | ~367 MB | Mimi codec encoder/decoder/quantizer |
 | `voices/*.safetensors` | ~6 MB | 18 voice preset embeddings |
@@ -144,7 +136,8 @@ The conversion script (`scripts/convert_personaplex.py`) maps PyTorch key conven
 
 - **RMSNorm**: `*.alpha` (1,1,D) → `*.weight` (D)
 - **Packed QKV**: `*.in_proj_weight` → `*.in_proj.weight` (+ `_scales`/`_biases` for 4-bit)
-- **Per-step FFN**: `layers.{l}.gating.{step}.linear_in.weight` → concatenated `layers.{l}.gating.linear_in.weight` (MultiLinear format)
+- **Packed out_proj**: `*.out_proj_weight` → `*.out_proj.weight` (+ `_scales`/`_biases` for 4-bit)
+- **Per-step FFN**: `layers.{l}.gating.{step}.linear_in.weight` → concatenated `layers.{l}.gating.linear_in.weight` (MultiLinear format, + `scales`/`biases` when quantized)
 - **Embeddings split**: `embeddings.safetensors` contains mixed temporal + depformer keys, split at load time
 
 ## Voices
@@ -158,11 +151,70 @@ The conversion script (`scripts/convert_personaplex.py`) maps PyTorch key conven
 ## Memory Requirements
 
 - Temporal transformer (4-bit): ~3.4 GB
-- Depformer (BF16, 16-step MultiLinear): ~2.4 GB
+- Depformer (4-bit, 16-step MultiLinear): ~650 MB
 - Embeddings + output heads: ~943 MB
 - Mimi codec: ~367 MB
 - KV cache (context=3000): ~1 GB
-- **Total**: ~8.1 GB (fits comfortably on 64 GB M-series Macs)
+- **Total**: ~6.4 GB (fits comfortably on M-series Macs with 16+ GB RAM)
+
+## Streaming Inference
+
+PersonaPlex supports streaming output via `respondStream()`, emitting audio chunks as they're generated (~2s per chunk at 25 frames).
+
+### How It Works
+
+During the autoregressive generation loop, agent audio codebook tokens are accumulated. Once enough frames are collected (default: 25 frames = ~2s), they're decoded incrementally through Mimi's streaming decoder (`MimiStreamingDecoder.decodeFrames()`) and emitted as a `PersonaPlexAudioChunk`.
+
+```
+Generation loop (12.5 Hz):
+  temporal.forward() → depformer.generate() → accumulate tokens
+  every 25 frames → Mimi decodeStep → emit audio chunk (~2s of 24kHz audio)
+```
+
+### Streaming Config
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `firstChunkFrames` | 25 | Frames before first audio emission (~2s) |
+| `chunkFrames` | 25 | Frames per subsequent chunk (~2s) |
+
+### API
+
+```swift
+let stream = model.respondStream(
+    userAudio: audio,
+    voice: .NATM0,
+    streaming: PersonaPlexModel.PersonaPlexStreamingConfig(
+        firstChunkFrames: 25, chunkFrames: 25)
+)
+for try await chunk in stream {
+    playAudio(chunk.samples)  // 24kHz mono
+    if chunk.isFinal { break }
+}
+```
+
+## Performance Optimizations
+
+The following optimizations are applied relative to the baseline offline implementation:
+
+| Optimization | Impact | Description |
+|-------------|--------|-------------|
+| **eval() consolidation** | ~15-25% | Reduced GPU sync barriers from 3 to 1 per generation step |
+| **Bulk audio extraction** | Decode phase | Single `.asArray(Float.self)` instead of per-sample `.item()` calls |
+| **Prefill batching** | Prefill phase | Voice prompt + silence/text/silence batched into 2 forward passes (was ~300 individual) |
+| **Compiled temporal transformer** | ~30% per step | `compile(shapeless: true)` fuses ~450 Metal kernels per step; opt-in via `warmUp()` |
+
+### Compiled Inference
+
+The temporal transformer can be compiled for Metal kernel fusion:
+
+```swift
+let model = try await PersonaPlexModel.fromPretrained(modelId: modelId)
+model.warmUp()  // compile + warmup pass
+// Subsequent respond() / respondStream() calls use compiled path
+```
+
+CLI: `personaplex-cli --input audio.wav --compile --output response.wav`
 
 ## References
 
