@@ -437,6 +437,47 @@ final class PersonaPlexE2ETests: XCTestCase {
         }
     }
 
+    // MARK: - Streaming Tests
+
+    func testStreamingProducesChunks() async throws {
+        if Self._model == nil { try await testLoadModel() }
+        let model = try self.model
+
+        // 0.5s test tone
+        let numSamples = 12000
+        var testAudio = [Float](repeating: 0, count: numSamples)
+        for i in 0..<numSamples {
+            testAudio[i] = sin(2 * .pi * 440 * Float(i) / 24000.0) * 0.5
+        }
+
+        let streamingConfig = PersonaPlexModel.PersonaPlexStreamingConfig(
+            firstChunkFrames: 10, chunkFrames: 10)
+        let stream = model.respondStream(
+            userAudio: testAudio,
+            voice: .NATM0,
+            maxSteps: 25,
+            streaming: streamingConfig,
+            verbose: true
+        )
+
+        var allSamples: [Float] = []
+        var chunkCount = 0
+        for try await chunk in stream {
+            XCTAssertFalse(chunk.samples.isEmpty, "Chunk should contain samples")
+            XCTAssertEqual(chunk.sampleRate, 24000)
+            allSamples.append(contentsOf: chunk.samples)
+            chunkCount += 1
+            print("  Stream chunk \(chunkCount): \(chunk.samples.count) samples, final=\(chunk.isFinal)")
+        }
+
+        XCTAssertGreaterThan(chunkCount, 1, "Should produce multiple chunks")
+        XCTAssertFalse(allSamples.isEmpty, "Should produce audio samples")
+
+        let maxAmp = allSamples.map { abs($0) }.max() ?? 0
+        XCTAssertGreaterThan(maxAmp, 0.001, "Streamed audio should not be silent")
+        print("Streaming: \(chunkCount) chunks, \(allSamples.count) total samples, maxAmp=\(String(format: "%.4f", maxAmp))")
+    }
+
     // MARK: - Response Relevance Tests
 
     /// E2E relevance test: real audio → PersonaPlex → ASR → keyword check.
