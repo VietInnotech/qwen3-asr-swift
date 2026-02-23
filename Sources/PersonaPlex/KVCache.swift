@@ -148,7 +148,7 @@ func applyLinear(_ module: Module, _ x: MLXArray) -> MLXArray {
 }
 
 func makeLinear(_ inputDims: Int, _ outputDims: Int, bias: Bool, groupSize: Int? = nil, bits: Int? = nil) -> Module {
-    if let gs = groupSize, let b = bits {
+    if let gs = groupSize, let b = bits, b < 16 {
         return QuantizedLinear(inputDims, outputDims, bias: bias, groupSize: gs, bits: b)
     }
     return Linear(inputDims, outputDims, bias: bias)

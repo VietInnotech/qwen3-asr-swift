@@ -13,3 +13,10 @@ personaplex-mlx-4bit/
 *.pt
 *.onnx
 tokenizer_spm_32k_3.model
+
+# Generated test audio (PersonaPlex output artifacts)
+Tests/**/test_audio_response.wav
+Tests/**/test_audio_roundtrip.wav
+
+# Blog drafts
+blog/

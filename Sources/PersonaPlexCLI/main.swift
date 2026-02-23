@@ -11,13 +11,16 @@ struct PersonaPlexCLI: ParsableCommand {
     )
 
     @Option(name: .long, help: "Input audio WAV file (24kHz mono)")
-    var input: String
+    var input: String?
 
     @Option(name: .long, help: "Output response WAV file")
     var output: String = "response.wav"
 
     @Option(name: .long, help: "Voice preset (e.g. NATM0, NATF1, VARF0)")
     var voice: String = "NATM0"
+
+    @Option(name: .long, help: "System prompt preset: focused (default), assistant, customer-service, teacher")
+    var systemPrompt: String = "focused"
 
     @Option(name: .long, help: "Maximum generation steps at 12.5Hz (default: 500 = ~40s)")
     var maxSteps: Int = 500
@@ -27,6 +30,9 @@ struct PersonaPlexCLI: ParsableCommand {
 
     @Flag(name: .long, help: "List available voices and exit")
     var listVoices: Bool = false
+
+    @Flag(name: .long, help: "List available system prompt presets and exit")
+    var listPrompts: Bool = false
 
     @Flag(name: .long, help: "Show detailed timing info")
     var verbose: Bool = false
@@ -40,9 +46,28 @@ struct PersonaPlexCLI: ParsableCommand {
             return
         }
 
+        if listPrompts {
+            print("Available system prompts:")
+            for p in SystemPromptPreset.allCases {
+                print("  \(p.rawValue) - \(p.description)")
+            }
+            return
+        }
+
+        guard let input = input else {
+            print("Error: --input is required for inference.")
+            throw ExitCode(1)
+        }
+
         guard let selectedVoice = PersonaPlexVoice(rawValue: voice) else {
             print("Unknown voice: \(voice)")
             print("Use --list-voices to see available options.")
+            throw ExitCode(1)
+        }
+
+        guard let selectedPrompt = SystemPromptPreset(rawValue: systemPrompt) else {
+            print("Unknown system prompt: \(systemPrompt)")
+            print("Use --list-prompts to see available options.")
             throw ExitCode(1)
         }
 
@@ -68,12 +93,13 @@ struct PersonaPlexCLI: ParsableCommand {
                 print("  Duration: \(String(format: "%.2f", duration))s (\(audio.count) samples)")
 
                 // Generate response
-                print("Generating response with voice \(selectedVoice.rawValue)...")
+                print("Generating response with voice \(selectedVoice.rawValue), prompt: \(selectedPrompt.rawValue)")
                 let startTime = CFAbsoluteTimeGetCurrent()
 
                 let response = model.respond(
                     userAudio: audio,
                     voice: selectedVoice,
+                    systemPromptTokens: selectedPrompt.tokens,
                     maxSteps: maxSteps,
                     verbose: verbose
                 )

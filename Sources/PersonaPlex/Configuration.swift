@@ -84,11 +84,14 @@ public struct TemporalTransformerConfig: Sendable {
     /// Constant silence tokens (used for agent audio during silence/text prompt phases)
     public static let silenceTokens: [Int32] = [948, 243, 1178, 546, 1736, 1030, 1978, 2008]
 
-    /// Default system prompt: "<system> You are a helpful assistant. Answer questions clearly and concisely. <system>"
+    /// Default system prompt: "<system> You are a helpful assistant. Listen carefully to what the user says,
+    /// then respond directly to their question or request. Stay on topic. Be concise. <system>"
     /// Pre-tokenized with SentencePiece (tokenizer_spm_32k_3.model)
     public static let defaultSystemPromptTokens: [Int32] = [
         607, 4831, 578, 493, 298, 272, 3850, 5019, 263,
-        506, 1292, 2366, 267, 22876, 362, 263, 607, 4831, 578
+        17453, 6716, 269, 419, 262, 819, 1182, 261, 409,
+        4816, 1312, 269, 347, 560, 307, 2498, 263, 17308,
+        291, 3398, 263, 1451, 22876, 263, 607, 4831, 578
     ]
 
     public init(
@@ -316,6 +319,62 @@ public enum PersonaPlexVoice: String, CaseIterable, Sendable {
         case .VARM2: return "Variety Male 2"
         case .VARM3: return "Variety Male 3"
         case .VARM4: return "Variety Male 4"
+        }
+    }
+}
+
+// MARK: - System Prompt Presets
+
+/// Pre-tokenized system prompts for PersonaPlex (SentencePiece tokenizer_spm_32k_3.model).
+/// Use `--system-prompt` CLI flag to select a preset.
+public enum SystemPromptPreset: String, CaseIterable, Sendable {
+    case focused
+    case assistant
+    case customerService = "customer-service"
+    case teacher
+
+    public var tokens: [Int32] {
+        switch self {
+        case .focused:
+            // "<system> You are a helpful assistant. Listen carefully to what the user says,
+            //  then respond directly to their question or request. Stay on topic. Be concise. <system>"
+            return [
+                607, 4831, 578, 493, 298, 272, 3850, 5019, 263,
+                17453, 6716, 269, 419, 262, 819, 1182, 261, 409,
+                4816, 1312, 269, 347, 560, 307, 2498, 263, 17308,
+                291, 3398, 263, 1451, 22876, 263, 607, 4831, 578
+            ]
+        case .assistant:
+            // "<system> You are a helpful assistant. Answer questions clearly and concisely. <system>"
+            return [
+                607, 4831, 578, 493, 298, 272, 3850, 5019, 263,
+                506, 1292, 2366, 267, 22876, 362, 263, 607, 4831, 578
+            ]
+        case .customerService:
+            // "<system> You are a customer service agent. Answer the customer question directly
+            //  and helpfully. Do not change the subject. <system>"
+            return [
+                607, 4831, 578, 493, 298, 272, 3740, 844, 3022, 263,
+                506, 262, 3740, 560, 1312, 267, 3850, 362, 263,
+                958, 309, 652, 262, 1523, 263, 607, 4831, 578
+            ]
+        case .teacher:
+            // "<system> You are a wise and friendly teacher. Answer questions or provide advice
+            //  in a clear and engaging way. <system>"
+            return [
+                607, 4831, 578, 493, 298, 272, 11821, 267, 7514, 3290, 263,
+                506, 1292, 307, 775, 3574, 271, 272, 1195, 267, 12250, 488, 263,
+                607, 4831, 578
+            ]
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .focused: return "Focused responder — stays on topic, concise (default)"
+        case .assistant: return "General helpful assistant"
+        case .customerService: return "Customer service agent — direct, no topic changes"
+        case .teacher: return "Friendly teacher — clear and engaging"
         }
     }
 }

@@ -33,41 +33,52 @@ from safetensors.numpy import save_file
 # 4-bit group quantization (MLX-compatible format)
 # ---------------------------------------------------------------------------
 
-def quantize_4bit(weight: torch.Tensor, group_size: int = 64):
-    """Quantize a 2-D float weight to 4-bit with per-group scales and biases.
+def quantize_nbit(weight: torch.Tensor, group_size: int = 64, bits: int = 4):
+    """Quantize a 2-D float weight to N-bit with per-group scales and biases.
 
+    Supports bits=4 (packed 8 per uint32) and bits=8 (packed 4 per uint32).
     Returns (packed_uint32, scales, biases) matching MLX QuantizedLinear format.
     """
+    assert bits in (4, 8), f"Only 4-bit and 8-bit quantization supported, got {bits}"
     assert weight.ndim == 2, f"Expected 2-D tensor, got {weight.ndim}-D"
     rows, cols = weight.shape
     assert cols % group_size == 0, (
         f"Columns ({cols}) must be divisible by group_size ({group_size})"
     )
     num_groups = cols // group_size
+    max_val = (1 << bits) - 1  # 15 for 4-bit, 255 for 8-bit
+    elems_per_uint32 = 32 // bits  # 8 for 4-bit, 4 for 8-bit
 
     w = weight.float().reshape(rows, num_groups, group_size)
     w_min = w.min(dim=-1).values
     w_max = w.max(dim=-1).values
 
-    scales = (w_max - w_min) / 15.0
+    scales = (w_max - w_min) / float(max_val)
     biases = w_min
     scales = scales.clamp(min=1e-10)
 
     scales_expanded = scales.unsqueeze(-1)
     biases_expanded = biases.unsqueeze(-1)
-    q = ((w - biases_expanded) / scales_expanded).round().clamp(0, 15).to(torch.uint8)
+    q = ((w - biases_expanded) / scales_expanded).round().clamp(0, max_val).to(torch.uint8)
     q = q.reshape(rows, cols)
 
-    assert cols % 8 == 0, f"Columns ({cols}) must be divisible by 8 for 4-bit packing"
-    packed_cols = cols // 8
+    assert cols % elems_per_uint32 == 0, (
+        f"Columns ({cols}) must be divisible by {elems_per_uint32} for {bits}-bit packing"
+    )
+    packed_cols = cols // elems_per_uint32
     packed = torch.zeros(rows, packed_cols, dtype=torch.int64)
-    for i in range(8):
-        packed |= q[:, i::8].to(torch.int64) << (4 * i)
+    for i in range(elems_per_uint32):
+        packed |= q[:, i::elems_per_uint32].to(torch.int64) << (bits * i)
 
     packed_np = packed.to(torch.int32).numpy().view(np.uint32)
     packed = torch.from_numpy(packed_np.copy())
 
     return packed, scales.to(torch.float16), biases.to(torch.float16)
+
+
+def quantize_4bit(weight: torch.Tensor, group_size: int = 64):
+    """Backward-compatible 4-bit quantization wrapper."""
+    return quantize_nbit(weight, group_size=group_size, bits=4)
 
 
 def tensors_to_numpy(tensors: dict) -> dict:
@@ -210,7 +221,7 @@ def download_files(model_id: str, cache_dir: str = None):
 # Conversion
 # ---------------------------------------------------------------------------
 
-def convert_temporal(state_dict: dict, quantize: bool, group_size: int = 64):
+def convert_temporal(state_dict: dict, quantize: bool, group_size: int = 64, bits: int = 4):
     """Convert and optionally quantize temporal transformer weights."""
     output = {}
     param_count = 0
@@ -221,7 +232,7 @@ def convert_temporal(state_dict: dict, quantize: bool, group_size: int = 64):
         param_count += numel
 
         if quantize and should_quantize_temporal(new_key, tensor):
-            packed, scales, biases = quantize_4bit(tensor, group_size)
+            packed, scales, biases = quantize_nbit(tensor, group_size, bits=bits)
             # Handle both "foo.weight" and "foo_weight" naming for quantized keys
             if new_key.endswith("_weight"):
                 base = new_key[:-len("_weight")]
@@ -232,7 +243,7 @@ def convert_temporal(state_dict: dict, quantize: bool, group_size: int = 64):
                 output[new_key] = packed
                 output[new_key.replace(".weight", ".scales")] = scales
                 output[new_key.replace(".weight", ".biases")] = biases
-            print(f"  [Q4] {key} -> {new_key} {list(packed.shape)} uint32")
+            print(f"  [Q{bits}] {key} -> {new_key} {list(packed.shape)} uint32")
         else:
             if tensor.dtype in (torch.float32, torch.float64):
                 tensor = tensor.to(torch.bfloat16)
@@ -398,11 +409,15 @@ def main():
     )
     parser.add_argument(
         "--no-quantize", action="store_true",
-        help="Skip 4-bit quantization of temporal transformer",
+        help="Skip quantization of temporal transformer",
+    )
+    parser.add_argument(
+        "--bits", type=int, default=4, choices=[4, 8],
+        help="Quantization bits (4 or 8, default: 4)",
     )
     parser.add_argument(
         "--group-size", type=int, default=64,
-        help="Group size for 4-bit quantization",
+        help="Group size for quantization",
     )
     parser.add_argument(
         "--cache-dir", default=None,
@@ -501,11 +516,12 @@ def main():
     # Convert temporal transformer
     # -----------------------------------------------------------------------
     quantize = not args.no_quantize
+    bits = args.bits
     print(f"\n{'='*60}")
-    print(f"Converting temporal transformer {'(4-bit)' if quantize else '(float)'}...")
+    print(f"Converting temporal transformer {'(' + str(bits) + '-bit)' if quantize else '(float)'}...")
     print(f"{'='*60}")
     temporal_out, temporal_params = convert_temporal(
-        temporal_weights, quantize=quantize, group_size=args.group_size)
+        temporal_weights, quantize=quantize, group_size=args.group_size, bits=bits)
     temporal_path = output_dir / "temporal.safetensors"
     save_file(tensors_to_numpy(temporal_out), str(temporal_path))
     temporal_size = os.path.getsize(str(temporal_path)) / (1024 * 1024)

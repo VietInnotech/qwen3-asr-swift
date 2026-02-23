@@ -18,7 +18,7 @@ Papers: [Qwen3-ASR](https://arxiv.org/abs/2601.21337), [Qwen3-TTS](https://arxiv
 | Qwen3-TTS-0.6B Base (4-bit) | Text → Speech | Yes (~120ms) | 10 languages | ~1.7 GB |
 | Qwen3-TTS-0.6B CustomVoice (4-bit) | Text → Speech | Yes (~120ms) | 10 languages | ~1.7 GB |
 | CosyVoice3-0.5B (4-bit) | Text → Speech | Yes (~150ms) | 9 languages | ~1.9 GB |
-| PersonaPlex-7B (4-bit) | Speech → Speech | No | EN | ~5.5 GB |
+| PersonaPlex-7B (4-bit) | Speech → Speech | No | EN | ~7.1 GB |
 
 ### When to Use Which TTS
 
@@ -111,7 +111,7 @@ swift build -c release
 
 ### Custom Voice / Speaker Selection
 
-The **CustomVoice** model variant supports 9 built-in speaker voices. Load it by passing the CustomVoice model ID:
+The **CustomVoice** model variant supports 9 built-in speaker voices and natural language instructions for tone/style control. Load it by passing the CustomVoice model ID:
 
 ```swift
 import Qwen3TTS
@@ -136,8 +136,50 @@ CLI:
 
 # List available speakers
 .build/release/qwen3-tts-cli --model customVoice --list-speakers
-
 ```
+
+### Tone / Style Instructions (CustomVoice only)
+
+The CustomVoice model accepts a natural language `instruct` parameter to control speaking style, tone, emotion, and pacing. The instruction is prepended to the model input in ChatML format.
+
+```swift
+// Cheerful tone
+let audio = model.synthesize(
+    text: "Welcome to our store!",
+    language: "english",
+    speaker: "ryan",
+    instruct: "Speak in a cheerful, upbeat tone"
+)
+
+// Slow and serious
+let audio = model.synthesize(
+    text: "We regret to inform you...",
+    language: "english",
+    speaker: "aiden",
+    instruct: "Read this slowly and solemnly"
+)
+
+// Whispering
+let audio = model.synthesize(
+    text: "Can you keep a secret?",
+    language: "english",
+    speaker: "vivian",
+    instruct: "Whisper this softly"
+)
+```
+
+CLI:
+
+```bash
+# With style instruction
+.build/release/qwen3-tts-cli "Good morning!" --model customVoice --speaker ryan \
+    --instruct "Speak in a cheerful, upbeat tone" --output cheerful.wav
+
+# Default instruct ("Speak naturally.") is applied automatically when using CustomVoice
+.build/release/qwen3-tts-cli "Hello world" --model customVoice --speaker ryan --output natural.wav
+```
+
+When no `--instruct` is provided with the CustomVoice model, `"Speak naturally."` is applied automatically to prevent rambling output. The Base model does not support instruct.
 
 ### Batch Synthesis
 
@@ -223,19 +265,35 @@ try WAVWriter.write(samples: response, sampleRate: 24000, to: outputURL)
 - **Variety Female**: VARF0, VARF1, VARF2, VARF3, VARF4
 - **Variety Male**: VARM0, VARM1, VARM2, VARM3, VARM4
 
+### System Prompts
+
+The system prompt steers the model's conversational behavior. The `focused` default keeps responses on-topic:
+
+```swift
+// Use a preset
+let response = model.respond(
+    userAudio: audio,
+    voice: .NATM0,
+    systemPromptTokens: SystemPromptPreset.customerService.tokens
+)
+```
+
+Available presets: `focused` (default), `assistant`, `customerService`, `teacher`.
+
 ### PersonaPlex CLI
 
 ```bash
 swift build -c release
 
-# Basic speech-to-speech
+# Basic speech-to-speech (uses "focused" prompt by default)
 .build/release/personaplex-cli --input question.wav --output response.wav
 
-# Choose a voice
-.build/release/personaplex-cli --input question.wav --voice NATF1 --output response.wav
+# Choose a voice and system prompt
+.build/release/personaplex-cli --input question.wav --voice NATF1 --system-prompt customer-service --output response.wav
 
-# List available voices
+# List available voices and prompts
 .build/release/personaplex-cli --list-voices
+.build/release/personaplex-cli --list-prompts
 ```
 
 ## CosyVoice TTS Usage
@@ -295,6 +353,14 @@ swift build -c release
 | Apple `AVSpeechSynthesizer` | AVFoundation | 0.08s | 0.08s | 0.17s (RTF 0.02) | N/A |
 
 > Qwen3-TTS generates natural, expressive speech with prosody and emotion, running **faster than real-time** (RTF < 1.0). Streaming synthesis delivers the first audio chunk in ~120ms. Apple's built-in TTS is ~35x faster but produces robotic, monotone speech.
+
+### PersonaPlex (Speech-to-Speech)
+
+| Model | Framework | ms/step | RTF | Notes |
+|-------|-----------|---------|-----|-------|
+| PersonaPlex-7B (4-bit) | MLX Swift (release) | ~78ms | ~5.0 | 20s input → 36s output in ~180s |
+
+> PersonaPlex runs at ~78ms/step — just under the 80ms real-time threshold at 12.5 Hz. Currently offline-only; prefill batching and compiled inference could significantly reduce RTF.
 
 RTF = Real-Time Factor (lower is better, < 1.0 = faster than real-time).
 

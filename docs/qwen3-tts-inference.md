@@ -31,6 +31,34 @@ Text projection MLP:  Linear(2048, 2048) -> SiLU -> Linear(2048, 1024)
 Text hidden states [B, T_text, 1024]
 ```
 
+## Stage 1b: Instruct Preparation (CustomVoice only)
+
+When an instruct string is provided (or the default `"Speak naturally."` is applied), it is tokenized and prepended to the prefill embeddings:
+
+```
+Instruct text (e.g. "Speak in a cheerful, upbeat tone")
+    |
+    v
+ChatML format:
+    <|im_start|>user\n{instruct}<|im_end|>\n
+    token IDs: [151644, 872, 198, ...instruct tokens..., 151645, 198]
+    |
+    v
+text_embedding -> text_projection
+    |
+    v
+Instruct hidden states [B, T_instruct, 1024]
+```
+
+The instruct embeddings are concatenated at the start of the prefill sequence:
+
+```
+Without instruct: [role_embed | text_embeddings | trailing_tokens]
+With instruct:    [instruct_embeddings | role_embed | text_embeddings | trailing_tokens]
+```
+
+This positions the style instruction early in the context so the Talker's attention can condition all subsequent generation on it.
+
 ## Stage 2: Codec Prefix
 
 Before autoregressive generation, a 6-token codec prefix is constructed:

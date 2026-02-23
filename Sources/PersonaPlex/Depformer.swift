@@ -200,11 +200,16 @@ public final class Depformer: Module {
     /// - Parameters:
     ///   - temporalHidden: [B, 1, temporalDim] hidden state from temporal transformer
     ///   - textToken: [B] sampled text token (input to step 0)
+    ///   - providedTokens: Optional [numSteps] array of tokens to use as conditioning for the
+    ///     next depformer step. Non-negative values are "provided" (e.g., real user audio from
+    ///     the cache); negative values mean "use the depformer's own prediction". Matches
+    ///     Python Moshi's `audio_provided` / `audio_tokens` logic in depformer_step().
     ///   - sampleFn: sampling function (logits, codebookIndex) -> token
     /// - Returns: [B, numSteps] generated audio codebook tokens
     public func generate(
         temporalHidden: MLXArray,
         textToken: MLXArray,
+        providedTokens: [Int32]? = nil,
         sampleFn: (MLXArray, Int) -> MLXArray
     ) -> MLXArray {
         var tokens: [MLXArray] = []
@@ -237,7 +242,14 @@ public final class Depformer: Module {
             // Sample
             let token = sampleFn(logits.squeezed(axis: 1), k)  // [B]
             tokens.append(token)
-            prevToken = token
+
+            // Use provided token as conditioning for the next step if available.
+            // This matches Python's: prev_token = where(audio_provided, audio_tokens, next_token)
+            if let provided = providedTokens, k < provided.count, provided[k] >= 0 {
+                prevToken = MLXArray([provided[k]])
+            } else {
+                prevToken = token
+            }
         }
 
         return stacked(tokens, axis: 1)  // [B, numSteps]

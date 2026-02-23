@@ -437,6 +437,387 @@ final class PersonaPlexE2ETests: XCTestCase {
         }
     }
 
+    // MARK: - Response Relevance Tests
+
+    /// E2E relevance test: real audio → PersonaPlex → ASR → keyword check.
+    /// Test audio: "Can you guarantee that the replacement part will be shipped tomorrow?"
+    /// Verifies the response transcript contains shipping/delivery-related content.
+    func testResponseRelevance() async throws {
+        if Self._model == nil { try await testLoadModel() }
+        let ppModel = try self.model
+
+        // Load test audio from known location
+        let audioURL = findTestAudio()
+        guard let url = audioURL else {
+            throw XCTSkip("test_audio.wav not found — expected at Tests/Qwen3ASRTests/Resources/test_audio.wav")
+        }
+        let userAudio = try AudioFileLoader.load(url: url, targetSampleRate: 24000)
+        let inputDuration = Double(userAudio.count) / 24000.0
+        print("Input: \(String(format: "%.2f", inputDuration))s (\(userAudio.count) samples)")
+
+        // Generate PersonaPlex response (200 gen steps ≈ 16s at 12.5Hz)
+        let response = ppModel.respond(
+            userAudio: userAudio, voice: .NATM0, maxSteps: 200, verbose: true)
+        XCTAssertFalse(response.isEmpty, "Should produce response audio")
+        let responseDuration = Double(response.count) / 24000.0
+        print("Response: \(String(format: "%.2f", responseDuration))s (\(response.count) samples)")
+
+        // Transcribe response with ASR
+        let asrModel = try await Qwen3ASRModel.fromPretrained()
+        let resampled = resampleLinear(response, fromRate: 24000, toRate: 16000)
+        let transcript = asrModel.transcribe(audio: resampled, sampleRate: 16000)
+        print("Response transcript: \"\(transcript)\"")
+
+        // --- Explicit relevance assertions ---
+        let lower = transcript.lowercased()
+
+        // 1. Non-empty, meaningful speech (at least 5 words)
+        let words = lower.split(separator: " ").map(String.init)
+        XCTAssertGreaterThan(words.count, 5,
+            "Response should contain at least 5 words, got \(words.count): \"\(transcript)\"")
+
+        // 2. Topic relevance: input asks about shipping a replacement part.
+        //    Response should mention at least ONE shipping/logistics keyword.
+        let shippingKeywords = [
+            "ship", "shipping", "shipped", "delivery", "deliver", "delivered",
+            "tomorrow", "order", "replacement", "part", "guarantee",
+            "days", "today", "estimate", "tracking", "package", "send", "sent",
+            "arrive", "arrival", "dispatch", "stock", "available", "warehouse"
+        ]
+        let matchedKeywords = shippingKeywords.filter { kw in
+            lower.contains(kw)
+        }
+        print("Matched shipping keywords: \(matchedKeywords)")
+        XCTAssertGreaterThanOrEqual(matchedKeywords.count, 1,
+            "Response should mention at least 1 shipping-related keyword. Transcript: \"\(transcript)\"")
+
+        // 3. No excessive repetition (degenerate output check)
+        let maxConsecutive = maxConsecutiveRepeats(in: words)
+        XCTAssertLessThan(maxConsecutive, 4,
+            "Response has degenerate repetition (\(maxConsecutive) consecutive repeated words)")
+
+        // 4. Word diversity: at least 30% unique words (not stuck in a loop)
+        let uniqueRatio = Double(Set(words).count) / Double(max(words.count, 1))
+        XCTAssertGreaterThan(uniqueRatio, 0.3,
+            "Response word diversity too low (\(String(format: "%.0f", uniqueRatio * 100))%): \"\(transcript)\"")
+    }
+
+    /// Verifies that response to speech contains coherent English
+    /// (not noise, silence, or foreign language).
+    func testResponseCoherence() async throws {
+        if Self._model == nil { try await testLoadModel() }
+        let ppModel = try self.model
+
+        let audioURL = findTestAudio()
+        guard let url = audioURL else {
+            throw XCTSkip("test_audio.wav not found")
+        }
+        let userAudio = try AudioFileLoader.load(url: url, targetSampleRate: 24000)
+
+        // Short response (100 steps ≈ 8s)
+        let response = ppModel.respond(
+            userAudio: userAudio, voice: .NATF0, maxSteps: 100, verbose: true)
+        XCTAssertFalse(response.isEmpty, "Should produce response audio")
+
+        // Check audio quality: non-silent, reasonable amplitude
+        let maxAmp = response.map { abs($0) }.max() ?? 0
+        let rms = sqrt(response.map { $0 * $0 }.reduce(0, +) / Float(max(response.count, 1)))
+        print("Audio: maxAmp=\(String(format: "%.4f", maxAmp)), RMS=\(String(format: "%.6f", rms))")
+        XCTAssertGreaterThan(maxAmp, 0.01, "Response should not be near-silent")
+        XCTAssertLessThan(maxAmp, 10.0, "Response amplitude should be reasonable")
+
+        // Transcribe and check for English content
+        let asrModel = try await Qwen3ASRModel.fromPretrained()
+        let resampled = resampleLinear(response, fromRate: 24000, toRate: 16000)
+        let transcript = asrModel.transcribe(audio: resampled, sampleRate: 16000)
+        print("Coherence transcript: \"\(transcript)\"")
+
+        // Should contain common English words (not gibberish)
+        let lower = transcript.lowercased()
+        let commonEnglish = ["the", "a", "is", "it", "to", "and", "of", "in", "that",
+                             "you", "i", "for", "we", "can", "so", "if", "but", "or",
+                             "have", "do", "what", "this", "with", "not", "be", "are"]
+        let englishHits = commonEnglish.filter { lower.contains($0) }
+        print("English word hits: \(englishHits.count)/\(commonEnglish.count)")
+        XCTAssertGreaterThanOrEqual(englishHits.count, 3,
+            "Response should contain at least 3 common English words, got: \(englishHits)")
+    }
+
+    // MARK: - Relevance Test Helpers
+
+    private func findTestAudio() -> URL? {
+        let candidates = [
+            "Tests/Qwen3ASRTests/Resources/test_audio.wav",
+            "Tests/PersonaPlexTests/Resources/test_audio.wav",
+        ]
+        let cwd = FileManager.default.currentDirectoryPath
+        for path in candidates {
+            let url = URL(fileURLWithPath: cwd).appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        // Also check absolute path from env
+        if let envPath = ProcessInfo.processInfo.environment["PERSONAPLEX_TEST_AUDIO"] {
+            let url = URL(fileURLWithPath: envPath)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    private func maxConsecutiveRepeats(in words: [String]) -> Int {
+        guard words.count > 1 else { return words.count }
+        var maxRun = 1, run = 1
+        for i in 1..<words.count {
+            if words[i] == words[i-1] { run += 1; maxRun = max(maxRun, run) }
+            else { run = 1 }
+        }
+        return maxRun
+    }
+
+    /// Deep diagnostic test: dumps text token stream, hidden state stats,
+    /// audio codebook patterns, and input token snapshots.
+    func testDeepDiagnostic() async throws {
+        if Self._model == nil { try await testLoadModel() }
+        let model = try self.model
+
+        // Use real audio if available, else 1s sine wave
+        let userAudio: [Float]
+        if let path = ProcessInfo.processInfo.environment["PERSONAPLEX_TEST_AUDIO"] {
+            userAudio = try AudioFileLoader.load(url: URL(fileURLWithPath: path), targetSampleRate: 24000)
+            print("DIAG: Using real audio (\(userAudio.count) samples, \(String(format: "%.2f", Double(userAudio.count)/24000))s)")
+        } else {
+            let n = 24000
+            userAudio = (0..<n).map { sin(2 * .pi * 440 * Float($0) / 24000) * 0.5 }
+            print("DIAG: Using 1s sine wave")
+        }
+
+        let (audio, diag) = model.respondDiagnostic(
+            userAudio: userAudio, voice: .NATM0, maxSteps: 50)
+
+        // 1. Text token stream
+        print("\n=== TEXT TOKEN STREAM (inner monologue) ===")
+        print("  Count: \(diag.textTokens.count)")
+        print("  First 50: \(Array(diag.textTokens.prefix(50)))")
+        let uniqueText = Set(diag.textTokens)
+        print("  Unique tokens: \(uniqueText.count)")
+        // Token frequency
+        var textFreq: [Int32: Int] = [:]
+        for t in diag.textTokens { textFreq[t, default: 0] += 1 }
+        let topText = textFreq.sorted { $0.value > $1.value }.prefix(10)
+        print("  Top 10 tokens: \(topText.map { "(\($0.key): \($0.value)x)" }.joined(separator: ", "))")
+
+        // 2. Hidden state stats
+        print("\n=== HIDDEN STATE STATS (first 20 gen steps) ===")
+        for (i, s) in diag.hiddenStats.enumerated() {
+            print("  step \(i): mean=\(String(format: "%+.4f", s.mean)) std=\(String(format: "%.4f", s.std)) range=[\(String(format: "%.2f", s.min)), \(String(format: "%.2f", s.max))]")
+        }
+
+        // 3. Text logit stats
+        print("\n=== TEXT LOGIT STATS (first 20 gen steps) ===")
+        for (i, s) in diag.textLogitStats.enumerated() {
+            print("  step \(i): top_token=\(s.topToken) top_logit=\(String(format: "%.2f", s.topLogit)) entropy=\(String(format: "%.2f", s.entropy))")
+        }
+
+        // 4. Input token snapshots
+        print("\n=== INPUT TOKEN SNAPSHOTS (streams 0-4, first 20 gen steps) ===")
+        for (i, snap) in diag.inputTokenSnapshots.enumerated() {
+            let desc = snap.map { "s\($0.stream)=\($0.token)" }.joined(separator: " ")
+            print("  step \(i): \(desc)")
+        }
+
+        // 5. Agent audio codebook stats
+        print("\n=== AGENT AUDIO CODEBOOK STATS ===")
+        for (cb, tokens) in diag.agentTokensByCodebook.prefix(8).enumerated() {
+            let unique = Set(tokens)
+            var freq: [Int32: Int] = [:]
+            for t in tokens { freq[t, default: 0] += 1 }
+            let top3 = freq.sorted { $0.value > $1.value }.prefix(3)
+            print("  CB\(cb): \(tokens.count) tokens, \(unique.count) unique, top3: \(top3.map { "\($0.key):\($0.value)x" }.joined(separator: " "))")
+            print("       first 20: \(Array(tokens.prefix(20)))")
+        }
+
+        // 6. Audio output stats
+        if !audio.isEmpty {
+            let maxAmp = audio.map { abs($0) }.max() ?? 0
+            let rms = sqrt(audio.map { $0 * $0 }.reduce(0, +) / Float(audio.count))
+            print("\n=== OUTPUT AUDIO ===")
+            print("  Samples: \(audio.count), duration: \(String(format: "%.2f", Double(audio.count)/24000))s")
+            print("  maxAmp: \(String(format: "%.4f", maxAmp)), RMS: \(String(format: "%.6f", rms))")
+        }
+    }
+
+    /// Compare temporal transformer forward pass against Python MLX reference.
+    /// Feeds the same known tokens with empty KV cache and compares intermediate values.
+    ///
+    /// Python MLX reference values (from /tmp/full_forward_mlx.py):
+    ///   Summed embeddings: mean=-0.000383, std=0.031235
+    ///   Layer 0:  mean=-0.000494, std=0.018814
+    ///   Layer 1:  mean=-0.000756, std=0.024948
+    ///   Layer 31: mean=-0.000849, std=0.574707
+    ///   After out_norm: mean=-0.002991, std=1.497070
+    ///   Text logits: argmax=21855, logit=3.7305
+    func testTemporalForwardMatch() async throws {
+        if Self._model == nil { try await testLoadModel() }
+        let model = try self.model
+        let temporal = model.temporal
+
+        // Reset caches for clean comparison
+        temporal.resetCache()
+
+        // Same input tokens as Python reference
+        let textTokens = MLXArray([Int32(3)]).reshaped([1, 1])
+        let silenceTokens: [Int32] = [948, 243, 1178, 546, 1736, 1030, 1978, 2008]
+        let sineTokens: [Int32] = [430, 1268, 381, 1611, 1095, 1495, 56, 472]
+        let allAudio = silenceTokens + sineTokens  // 16 tokens
+        let audioTokens = MLXArray(allAudio).reshaped([1, 16, 1])
+
+        print("\n=== TEMPORAL FORWARD MATCH TEST ===")
+
+        // Step 1: Compute embedding sum manually (matching TemporalTransformer.forward)
+        var hidden = temporal.text_emb(textTokens)
+        eval(hidden)
+        let textMean = MLX.mean(hidden).item(Float.self)
+        print("  text_emb mean: \(String(format: "%.6f", textMean))")
+        // Python: -0.000121
+
+        for i in 0..<16 {
+            let tok = audioTokens[0..<1, i, 0..<1]
+            let safeTok = MLX.maximum(tok, MLXArray(Int32(0)))
+            let embResult = temporal.emb[i](safeTok)
+            hidden = hidden + embResult
+        }
+        eval(hidden)
+        let sumMean = MLX.mean(hidden).item(Float.self)
+        let sumStd = MLX.sqrt(MLX.mean(hidden * hidden)).item(Float.self)  // rough std
+        let first5 = (0..<5).map { hidden[0, 0, $0].item(Float.self) }
+        print("  Summed: mean=\(String(format: "%.6f", sumMean))")
+        print("  Summed first 5: \(first5.map { String(format: "%.6f", $0) })")
+        // Python: mean=-0.000383, first5=[0.042, -0.012, 0.018, -0.011, -0.048]
+
+        // Step 2: Pass through each layer individually
+        for layerIdx in 0..<temporal.cfg.numLayers {
+            let cache = temporal.cache[layerIdx]
+            hidden = temporal.layers[layerIdx](hidden, cache: cache, offset: 1)
+            eval(hidden)
+
+            if layerIdx < 3 || layerIdx >= 30 || layerIdx == 15 {
+                let lMean = MLX.mean(hidden).item(Float.self)
+                let lStd = MLX.sqrt(MLX.mean(hidden * hidden)).item(Float.self)
+                let lMin = MLX.min(hidden).item(Float.self)
+                let lMax = MLX.max(hidden).item(Float.self)
+                print("  Layer \(layerIdx): mean=\(String(format: "%.6f", lMean)), rms=\(String(format: "%.6f", lStd)), range=[\(String(format: "%.3f", lMin)), \(String(format: "%.3f", lMax))]")
+            }
+        }
+        // Python Layer 0: mean=-0.000494, Layer 31: mean=-0.000849, std=0.574707
+
+        // Step 3: out_norm
+        let normed = temporal.out_norm(hidden)
+        eval(normed)
+        let normMean = MLX.mean(normed).item(Float.self)
+        let normFirst5 = (0..<5).map { normed[0, 0, $0].item(Float.self) }
+        print("  After out_norm: mean=\(String(format: "%.6f", normMean))")
+        print("  out_norm first 5: \(normFirst5.map { String(format: "%.6f", $0) })")
+        // Python: mean=-0.002991, first5=[-0.619, -1.014, 2.180, 2.605, -2.598]
+
+        // Step 4: Text logits
+        let textLogits = temporal.text_linear(normed)
+        eval(textLogits)
+        let logitsMean = MLX.mean(textLogits).item(Float.self)
+        print("  Text logits mean: \(String(format: "%.6f", logitsMean))")
+        // Python: -1.175781
+
+        // Argmax
+        let flat = textLogits.reshaped([-1])
+        let argmaxIdx = argMax(flat).item(Int32.self)
+        let argmaxVal = flat[Int(argmaxIdx)].item(Float.self)
+        print("  Argmax: token=\(argmaxIdx), logit=\(String(format: "%.4f", argmaxVal))")
+        // Python: token=21855, logit=3.7305
+
+        // Top-5
+        let top5 = argSort(-flat)[0..<5]
+        eval(top5)
+        print("  Top 5 tokens: ", terminator: "")
+        for i in 0..<5 {
+            let idx = top5[i].item(Int32.self)
+            let val = flat[Int(idx)].item(Float.self)
+            print("\(idx)(\(String(format: "%.2f", val))) ", terminator: "")
+        }
+        print()
+
+        // Assertions (tolerance for quantization differences)
+        XCTAssertEqual(sumMean, -0.000383, accuracy: 0.001, "Embedding sum mean should match Python")
+        XCTAssertEqual(argmaxIdx, 21855, "Argmax text token should match Python reference")
+    }
+
+    /// Compare depformer forward pass against Python MLX reference.
+    /// Uses the temporal hidden state from testTemporalForwardMatch and runs through depformer.
+    ///
+    /// Python MLX reference (from /tmp/test_depformer_mlx.py):
+    ///   Step 0:  argmax=1676  Step 1:  argmax=1515  Step 2:  argmax=1626
+    ///   Step 3:  argmax=1562  Step 4:  argmax=306   Step 5:  argmax=478
+    ///   Step 6:  argmax=326   Step 7:  argmax=101   Step 8:  argmax=768
+    ///   Step 9:  argmax=243   Step 10: argmax=1178  Step 11: argmax=417
+    ///   Step 12: argmax=1736  Step 13: argmax=478   Step 14: argmax=1334
+    ///   Step 15: argmax=274
+    func testDepformerForwardMatch() async throws {
+        if Self._model == nil { try await testLoadModel() }
+        let model = try self.model
+        let temporal = model.temporal
+        let depformer = model.depformer
+
+        // Reset caches
+        temporal.resetCache()
+
+        // Same input tokens as temporal forward test
+        let textTokens = MLXArray([Int32(3)]).reshaped([1, 1])
+        let silenceTokens: [Int32] = [948, 243, 1178, 546, 1736, 1030, 1978, 2008]
+        let sineTokens: [Int32] = [430, 1268, 381, 1611, 1095, 1495, 56, 472]
+        let allAudio = silenceTokens + sineTokens
+        let audioTokens = MLXArray(allAudio).reshaped([1, 16, 1])
+
+        // Compute temporal hidden state (same as testTemporalForwardMatch)
+        let (normedHidden, textLogits) = temporal.forward(
+            textTokens: textTokens, audioTokens: audioTokens, offset: 1)
+        eval(normedHidden, textLogits)
+
+        // Get text token argmax
+        let flatLogits = textLogits.reshaped([-1])
+        let textTokenGen = argMax(flatLogits)
+        eval(textTokenGen)
+        let textTok = textTokenGen.reshaped([1])
+
+        print("\n=== DEPFORMER FORWARD MATCH TEST ===")
+        print("  Text argmax: \(textTok[0].item(Int32.self))")
+
+        // Run depformer with argmax sampling (temperature=0)
+        let expectedArgmax: [Int32] = [1676, 1515, 1626, 1562, 306, 478, 326, 101,
+                                        768, 243, 1178, 417, 1736, 478, 1334, 274]
+
+        let agentCodes = depformer.generate(
+            temporalHidden: normedHidden,
+            textToken: textTok
+        ) { logits, cbIdx in
+            // Argmax sampling (temperature 0)
+            return sampleTopK(logits: logits, temperature: 0, topK: 0)
+        }
+        eval(agentCodes)
+
+        // Print results
+        let codeArr = agentCodes[0]  // [numSteps]
+        var mismatches = 0
+        for k in 0..<16 {
+            let tok = codeArr[k].item(Int32.self)
+            let expected = expectedArgmax[k]
+            let match = tok == expected ? "✓" : "✗ MISMATCH"
+            print("  Step \(String(format: "%2d", k)): token=\(String(format: "%5d", tok)) expected=\(String(format: "%5d", expected)) \(match)")
+            if tok != expected { mismatches += 1 }
+        }
+        print("  Mismatches: \(mismatches)/16")
+
+        // Assert first codebook matches (most critical for audio quality)
+        XCTAssertEqual(codeArr[0].item(Int32.self), expectedArgmax[0],
+                       "Depformer step 0 should match Python reference")
+    }
+
     /// Round-trip test: real audio → PersonaPlex → response audio → ASR transcription.
     /// Checks that the response contains recognizable English speech.
     func testRoundTripASR() async throws {
@@ -453,11 +834,18 @@ final class PersonaPlexE2ETests: XCTestCase {
         let inputDuration = Double(userAudio.count) / 24000.0
         print("Input audio: \(String(format: "%.2f", inputDuration))s")
 
-        // Generate response
+        // Use same system prompt as Python reference for comparison
+        // "<system> You are a wise and friendly teacher. Answer questions or provide advice in a clear and engaging way. <system>"
+        let refPromptTokens: [Int32] = [607, 4831, 578, 493, 298, 272, 11821, 267, 7514, 3290, 263, 506, 1292, 307, 775, 3574, 271, 272, 1195, 267, 12250, 488, 263, 607, 4831, 578]
+
+        // Generate response. maxSteps=0 means generate only during user audio
+        // (matching Python reference which also generates exactly len(user_audio) steps).
+        // Post-user-audio generation degenerates without continuous user input.
         let response = ppModel.respond(
             userAudio: userAudio,
             voice: .NATM0,
-            maxSteps: 200,
+            systemPromptTokens: refPromptTokens,
+            maxSteps: 0,
             verbose: true
         )
 

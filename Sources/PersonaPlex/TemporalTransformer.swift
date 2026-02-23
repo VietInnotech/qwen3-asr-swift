@@ -36,11 +36,11 @@ public final class TemporalAttention: Module {
         self.cfg = cfg
         let totalDim = 3 * cfg.dim  // Q + K + V packed (no GQA, all 32 heads)
         self._in_proj = ModuleInfo(wrappedValue:
-            QuantizedLinear(cfg.dim, totalDim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
+            makeLinear(cfg.dim, totalDim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
         self._out_proj = ModuleInfo(wrappedValue:
-            QuantizedLinear(cfg.dim, cfg.dim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
+            makeLinear(cfg.dim, cfg.dim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
         self._rope = ModuleInfo(wrappedValue: RoPE(
-            dimensions: cfg.headDim, traditional: false, base: Float(cfg.maxPeriod)))
+            dimensions: cfg.headDim, traditional: true, base: Float(cfg.maxPeriod)))
         self.scale = 1.0 / Float(Double(cfg.headDim).squareRoot())
     }
 
@@ -97,9 +97,9 @@ public final class TemporalFFN: Module {
     public init(cfg: TemporalTransformerConfig) {
         let ffnDim = cfg.intermediateSize
         self._linear_in = ModuleInfo(wrappedValue:
-            QuantizedLinear(cfg.dim, 2 * ffnDim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
+            makeLinear(cfg.dim, 2 * ffnDim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
         self._linear_out = ModuleInfo(wrappedValue:
-            QuantizedLinear(ffnDim, cfg.dim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
+            makeLinear(ffnDim, cfg.dim, bias: false, groupSize: cfg.groupSize, bits: cfg.bits))
     }
 
     public func callAsFunction(_ xs: MLXArray) -> MLXArray {
@@ -207,10 +207,17 @@ public final class TemporalTransformer: Module {
         let b = textTokens.shape[0]
         let t = textTokens.shape[1]
 
-        // Sum all 17 embeddings
+        // Sum all 17 embeddings.
+        // Original ScaledEmbedding returns zero vectors for -1 tokens.
+        // We clamp -1 → 0 for safe lookup, then zero-mask the result.
         var hidden = text_emb(textTokens)  // [B, T, dim]
         for i in 0..<cfg.numAudioEmbeddings {
-            hidden = hidden + emb[i](audioTokens[0..<b, i, 0..<t])
+            let rawTokens = audioTokens[0..<b, i, 0..<t]        // [B, T]
+            let isValid = rawTokens .>= MLXArray(Int32(0))       // [B, T] bool
+            let safeTokens = MLX.maximum(rawTokens, MLXArray(Int32(0)))  // clamp -1 → 0
+            let embResult = emb[i](safeTokens)                   // [B, T, dim]
+            let mask = isValid.expandedDimensions(axis: -1)      // [B, T, 1]
+            hidden = hidden + MLX.where(mask, embResult, MLXArray(Float(0)))
         }
 
         // Pass through transformer layers

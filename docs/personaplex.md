@@ -71,6 +71,24 @@ for k in 0..<16:
   token = sample(logits)
 ```
 
+## Inference Pipeline
+
+```
+1. Encode user audio with Mimi → [1, 16, T] codebook tokens
+2. Replay voice prompt embeddings (50 frames, ~4s)
+3. Silence spacer (0.5s)
+4. Text system prompt (one token per frame)
+5. Silence spacer (0.5s)
+6. User audio frames — agent generates simultaneously (full-duplex)
+7. Post-user generation (optional, up to maxSteps)
+8. Decode agent tokens with Mimi → 24kHz response audio
+```
+
+**Example run** (M2 Max, 4-bit):
+- Input: "Can you guarantee that the replacement part will be shipped tomorrow?" (20s)
+- Output: "I can't promise a specific time, but we'll do our best to get it out tomorrow. It's one of the top priorities, so yes, we'll try to get it done as soon as possible and ship it first thing in the morning." (36s)
+- RTF: ~5.0 (offline inference, not yet optimized)
+
 ## Delay Pattern
 
 The 17 streams use temporal delays to handle autoregressive dependencies:
@@ -89,9 +107,24 @@ Stream 16 (agent audio cb7): delay=1
 
 Semantic codebooks (cb0) and text have no delay; acoustic codebooks (cb1-7) have delay=1.
 
+## System Prompts
+
+PersonaPlex accepts a text system prompt that steers the model's behavior. Prompts are pre-tokenized with SentencePiece (`tokenizer_spm_32k_3.model`) and injected between silence spacers before the user audio.
+
+**Built-in presets:**
+
+| Preset | Prompt |
+|--------|--------|
+| `focused` (default) | "Listen carefully to what the user says, then respond directly to their question or request. Stay on topic. Be concise." |
+| `assistant` | "Answer questions clearly and concisely." |
+| `customer-service` | "Answer the customer question directly and helpfully. Do not change the subject." |
+| `teacher` | "Answer questions or provide advice in a clear and engaging way." |
+
+The prompt significantly affects output quality. Without focused instructions, the model tends to ramble off-topic. The `focused` preset keeps responses directly relevant to the user's question.
+
 ## Sampling
 
-- **Audio**: temperature=0.8, top_k=250
+- **Audio**: temperature=0.8, top_k=250, repetition_penalty=1.2 (window=30)
 - **Text**: temperature=0.7, top_k=25
 
 ## Weight Files
