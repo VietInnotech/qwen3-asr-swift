@@ -2,7 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXFast
-import Qwen3Common
+import AudioCommon
 
 /// Multi-head attention for Qwen3 text decoder with GQA and RoPE (quantized version)
 public class QuantizedTextAttention: Module {

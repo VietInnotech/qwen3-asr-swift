@@ -2,7 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXFast
-import Qwen3Common
+import AudioCommon
 
 /// Attention for Code Predictor — standard 1D RoPE (same pattern as ASR)
 public class CodePredictorAttention: Module {

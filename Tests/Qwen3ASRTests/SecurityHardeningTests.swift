@@ -1,7 +1,7 @@
 import XCTest
 import Foundation
 @testable import Qwen3ASR
-@testable import Qwen3Common
+@testable import AudioCommon
 
 // MARK: - WAV Parsing Hardening Tests
 

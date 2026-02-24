@@ -4,7 +4,7 @@ import MLX
 import Metal
 #endif
 @testable import Qwen3ASR
-@testable import Qwen3Common
+@testable import AudioCommon
 
 final class Qwen3ASRTests: XCTestCase {
 

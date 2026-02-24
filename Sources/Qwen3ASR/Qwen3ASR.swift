@@ -2,7 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXFast
-import Qwen3Common
+import AudioCommon
 
 /// Special token IDs for Qwen3-ASR
 public struct Qwen3ASRTokens {

@@ -1,7 +1,7 @@
 import Foundation
 import MLX
 import MLXNN
-import Qwen3Common
+import AudioCommon
 
 /// Weight loading for TTS components
 public enum TTSWeightLoader {

@@ -1,7 +1,7 @@
 import XCTest
 import MLX
 @testable import PersonaPlex
-import Qwen3Common
+import AudioCommon
 import Qwen3ASR
 
 final class PersonaPlexTests: XCTestCase {

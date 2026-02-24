@@ -163,7 +163,7 @@ PersonaPlex supports streaming output via `respondStream()`, emitting audio chun
 
 ### How It Works
 
-During the autoregressive generation loop, agent audio codebook tokens are accumulated. Once enough frames are collected (default: 25 frames = ~2s), they're decoded incrementally through Mimi's streaming decoder (`MimiStreamingDecoder.decodeFrames()`) and emitted as a `PersonaPlexAudioChunk`.
+During the autoregressive generation loop, agent audio codebook tokens are accumulated. Once enough frames are collected (default: 25 frames = ~2s), they're decoded incrementally through Mimi's streaming decoder (`MimiStreamingDecoder.decodeFrames()`) and emitted as an `AudioChunk` (from `AudioCommon`).
 
 ```
 Generation loop (12.5 Hz):
@@ -214,7 +214,7 @@ model.warmUp()  // compile + warmup pass
 // Subsequent respond() / respondStream() calls use compiled path
 ```
 
-CLI: `personaplex-cli --input audio.wav --compile --output response.wav`
+CLI: `audio respond --input audio.wav --compile --output response.wav`
 
 ## References
 

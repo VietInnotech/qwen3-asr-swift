@@ -1,7 +1,7 @@
 import XCTest
 import MLX
 @testable import CosyVoiceTTS
-import Qwen3Common
+import AudioCommon
 
 final class CosyVoiceTTSConfigTests: XCTestCase {
 
@@ -462,7 +462,7 @@ final class CosyVoiceTTSE2ETests: XCTestCase {
     func testStreamingSynthesis() async throws {
         let model = try await CosyVoiceTTSModel.fromPretrained()
 
-        var chunks: [CosyVoiceAudioChunk] = []
+        var chunks: [AudioChunk] = []
         for try await chunk in model.synthesizeStream(text: "Hello world") {
             chunks.append(chunk)
         }

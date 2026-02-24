@@ -2,7 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXFast
-import Qwen3Common
+import AudioCommon
 
 // MARK: - Sampling
 
@@ -210,7 +210,7 @@ public class CosyVoiceAttention: Module {
 // MARK: - CosyVoiceBlock
 
 /// Pre-norm transformer block for CosyVoice LLM.
-/// Uses SwiGLU MLP via QuantizedMLP from Qwen3Common.
+/// Uses SwiGLU MLP via QuantizedMLP from AudioCommon.
 public class CosyVoiceBlock: Module {
     @ModuleInfo var selfAttn: CosyVoiceAttention
     @ModuleInfo var mlp: QuantizedMLP

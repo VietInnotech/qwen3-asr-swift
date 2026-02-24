@@ -2,7 +2,7 @@ import XCTest
 import Foundation
 import MLX
 @testable import Qwen3ASR
-@testable import Qwen3Common
+@testable import AudioCommon
 
 /// Integration tests that download and use actual model weights
 final class Qwen3ASRIntegrationTests: XCTestCase {
