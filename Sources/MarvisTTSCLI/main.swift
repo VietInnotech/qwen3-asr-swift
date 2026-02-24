@@ -1,7 +1,7 @@
 import Foundation
 import MLX
 import MarvisTTS
-import Qwen3Common
+import AudioCommon
 import ArgumentParser
 
 struct MarvisTTSCLI: ParsableCommand {

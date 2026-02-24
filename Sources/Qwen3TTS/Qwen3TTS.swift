@@ -2,7 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXFast
-import Qwen3Common
+import AudioCommon
 
 /// Errors thrown by streaming TTS synthesis.
 public enum TTSError: Error, LocalizedError {

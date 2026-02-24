@@ -52,7 +52,7 @@ import Qwen3ASR     // Speech recognition
 import Qwen3TTS     // Text-to-speech (Qwen3)
 import CosyVoiceTTS  // Text-to-speech (streaming)
 import PersonaPlex   // Speech-to-speech (full-duplex)
-import Qwen3Common   // Shared utilities
+import AudioCommon   // Shared utilities
 ```
 
 ### Requirements
@@ -143,7 +143,7 @@ Non-autoregressive — single forward pass, no sampling loop. See [Forced Aligne
 
 ```swift
 import Qwen3TTS
-import Qwen3Common  // for WAVWriter
+import AudioCommon  // for WAVWriter
 
 let model = try await Qwen3TTSModel.fromPretrained()
 // Downloads ~1.7 GB on first run (model + codec weights)
@@ -296,7 +296,7 @@ CLI:
 
 ```swift
 import PersonaPlex
-import Qwen3Common  // for WAVWriter, AudioFileLoader
+import AudioCommon  // for WAVWriter, AudioFileLoader
 
 let model = try await PersonaPlexModel.fromPretrained()
 // Downloads ~5.5 GB on first run (temporal 4-bit + depformer + Mimi codec + voice presets)
@@ -363,7 +363,7 @@ swift build -c release
 
 ```swift
 import CosyVoiceTTS
-import Qwen3Common  // for WAVWriter
+import AudioCommon  // for WAVWriter
 
 let model = try await CosyVoiceTTSModel.fromPretrained()
 // Downloads ~1.9 GB on first run (LLM + DiT + HiFi-GAN weights)

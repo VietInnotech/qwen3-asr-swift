@@ -2,7 +2,7 @@ import XCTest
 import MLX
 @testable import MarvisTTS
 @testable import Qwen3ASR
-@testable import Qwen3Common
+@testable import AudioCommon
 
 // MARK: - Config Tests (no model download needed)
 

@@ -1,5 +1,5 @@
 import Foundation
-import Qwen3Common
+import AudioCommon
 
 /// Result of preprocessing text for forced alignment
 public struct SlottedText {

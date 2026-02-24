@@ -1,7 +1,7 @@
 import Foundation
 import MLX
 import MLXNN
-import Qwen3Common
+import AudioCommon
 
 /// Error types for CosyVoice TTS
 public enum CosyVoiceTTSError: Error, LocalizedError {

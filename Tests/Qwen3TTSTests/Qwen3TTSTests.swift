@@ -2,7 +2,7 @@ import XCTest
 import Foundation
 @testable import Qwen3TTS
 @testable import Qwen3ASR
-@testable import Qwen3Common
+@testable import AudioCommon
 
 final class Qwen3TTSConfigTests: XCTestCase {
 

@@ -1,7 +1,7 @@
 import Foundation
 import MLX
 import MLXNN
-import Qwen3Common
+import AudioCommon
 
 /// Weight loading utilities for Qwen3-ASR
 /// Uses direct HuggingFace key paths - model structure must match exactly

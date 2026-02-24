@@ -1,7 +1,7 @@
 import Foundation
 import MLX
 import MLXNN
-import Qwen3Common
+import AudioCommon
 
 // MARK: - PersonaPlex Model
 
@@ -455,7 +455,7 @@ public final class PersonaPlexModel: Module {
 
     // MARK: - Streaming Inference
 
-    // AudioChunk is defined in Qwen3Common/Protocols.swift
+    // AudioChunk is defined in AudioCommon/Protocols.swift
 
     /// Streaming configuration.
     public struct PersonaPlexStreamingConfig: Sendable {

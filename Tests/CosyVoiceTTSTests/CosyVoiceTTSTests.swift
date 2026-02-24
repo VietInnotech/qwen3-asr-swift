@@ -1,7 +1,7 @@
 import XCTest
 import MLX
 @testable import CosyVoiceTTS
-import Qwen3Common
+import AudioCommon
 
 final class CosyVoiceTTSConfigTests: XCTestCase {
 

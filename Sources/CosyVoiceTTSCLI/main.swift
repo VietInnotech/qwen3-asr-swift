@@ -1,7 +1,7 @@
 import Foundation
 import ArgumentParser
 import CosyVoiceTTS
-import Qwen3Common
+import AudioCommon
 
 struct CosyVoiceTTSCLI: ParsableCommand {
     static let configuration = CommandConfiguration(

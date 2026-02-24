@@ -1,6 +1,6 @@
 import Foundation
 import Qwen3TTS
-import Qwen3Common
+import AudioCommon
 import ArgumentParser
 
 struct Qwen3TTSCLI: ParsableCommand {

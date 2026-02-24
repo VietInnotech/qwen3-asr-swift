@@ -1,7 +1,7 @@
 import Foundation
 import MLX
 import MLXNN
-import Qwen3Common
+import AudioCommon
 
 @inline(__always) private func product(_ xs: [Int]) -> Int { xs.reduce(1, *) }
 

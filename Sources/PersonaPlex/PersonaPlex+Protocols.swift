@@ -1,4 +1,4 @@
-import Qwen3Common
+import AudioCommon
 
 // MARK: - SpeechToSpeechModel
 

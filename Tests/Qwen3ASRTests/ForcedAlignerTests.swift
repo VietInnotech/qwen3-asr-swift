@@ -2,7 +2,7 @@ import XCTest
 import Foundation
 import MLX
 @testable import Qwen3ASR
-@testable import Qwen3Common
+@testable import AudioCommon
 
 /// Tests for the Forced Aligner
 final class ForcedAlignerTests: XCTestCase {

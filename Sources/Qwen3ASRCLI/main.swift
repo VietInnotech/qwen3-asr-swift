@@ -1,6 +1,6 @@
 import Foundation
 import Qwen3ASR
-import Qwen3Common
+import AudioCommon
 
 /// Resolve a model specifier to a HuggingFace model ID.
 /// Accepts shorthand ("0.6B", "1.7B") or full model IDs.

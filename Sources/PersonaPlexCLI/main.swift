@@ -1,7 +1,7 @@
 import Foundation
 import ArgumentParser
 import PersonaPlex
-import Qwen3Common
+import AudioCommon
 import MLX
 
 struct PersonaPlexCLI: ParsableCommand {

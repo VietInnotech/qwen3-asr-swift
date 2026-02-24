@@ -2,9 +2,9 @@ import Foundation
 import MLX
 import MLXNN
 import MLXFast
-import Qwen3Common
+import AudioCommon
 
-// AlignedWord is defined in Qwen3Common/Protocols.swift and re-exported via Qwen3Common import above.
+// AlignedWord is defined in AudioCommon/Protocols.swift and re-exported via AudioCommon import above.
 
 /// Qwen3 Forced Aligner — predicts word-level timestamps for audio+text pairs.
 ///

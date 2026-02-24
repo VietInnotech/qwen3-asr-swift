@@ -2,11 +2,11 @@
 
 ## Overview
 
-The `Qwen3Common` module defines shared protocols that provide model-agnostic interfaces for speech processing. These allow generic code to work with any conforming model without knowing its concrete type.
+The `AudioCommon` module defines shared protocols that provide model-agnostic interfaces for speech processing. These allow generic code to work with any conforming model without knowing its concrete type.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    Qwen3Common                          │
+│                    AudioCommon                          │
 │                                                         │
 │  AudioChunk          SpeechGenerationModel (TTS)        │
 │  AlignedWord         SpeechRecognitionModel (STT)       │
@@ -109,7 +109,7 @@ public struct AlignedWord: Sendable {
 ### Generic TTS Function
 
 ```swift
-import Qwen3Common
+import AudioCommon
 
 func synthesizeAny(
     _ model: any SpeechGenerationModel,
@@ -148,6 +148,54 @@ for model in ttsModels {
     print("Generated \(audio.count) samples at \(model.sampleRate) Hz")
 }
 ```
+
+## Module Structure
+
+```
+Sources/
+├── AudioCommon/               Shared types, protocols, utilities
+│   ├── Protocols.swift        AudioChunk, AlignedWord, 4 protocols
+│   ├── AudioFileLoader.swift  WAV/audio file loading
+│   ├── WAVWriter.swift        WAV file writing
+│   ├── WeightLoading.swift    Safetensors loading, HuggingFace download
+│   ├── Tokenizer.swift        BPE tokenizer
+│   ├── QuantizedMLP.swift     Shared 4-bit SwiGLU MLP
+│   └── PreQuantizedEmbedding.swift  4-bit packed embedding table
+│
+├── Qwen3ASR/                  Speech-to-text (ASR + Forced Aligner)
+│   ├── Qwen3ASR.swift         Qwen3ASRModel: SpeechRecognitionModel
+│   ├── ForcedAligner.swift    Qwen3ForcedAligner: ForcedAlignmentModel
+│   ├── Qwen3ASR+Protocols.swift
+│   └── ForcedAligner+Protocols.swift
+│
+├── Qwen3TTS/                  Text-to-speech (Talker + Code Predictor + Mimi)
+│   ├── Qwen3TTS.swift         Qwen3TTSModel: SpeechGenerationModel
+│   └── Qwen3TTS+Protocols.swift
+│
+├── CosyVoiceTTS/              Text-to-speech (LLM + DiT + HiFi-GAN)
+│   ├── CosyVoiceTTS.swift     CosyVoiceTTSModel: SpeechGenerationModel
+│   └── CosyVoiceTTS+Protocols.swift
+│
+├── PersonaPlex/               Speech-to-speech (Temporal + Depformer + Mimi)
+│   ├── PersonaPlex.swift      PersonaPlexModel: SpeechToSpeechModel
+│   └── PersonaPlex+Protocols.swift
+│
+├── Qwen3ASRCLI/               CLI for ASR + forced alignment
+├── Qwen3TTSCLI/               CLI for Qwen3-TTS
+├── CosyVoiceTTSCLI/           CLI for CosyVoice TTS
+└── PersonaPlexCLI/            CLI for PersonaPlex
+```
+
+### Dependencies
+
+```
+AudioCommon  ← Qwen3ASR  ← Qwen3ASRCLI
+             ← Qwen3TTS  ← Qwen3TTSCLI
+             ← CosyVoiceTTS ← CosyVoiceTTSCLI
+             ← PersonaPlex ← PersonaPlexCLI
+```
+
+Each model target depends only on `AudioCommon` and MLX. No cross-dependencies between model targets.
 
 ## Design Decisions
 

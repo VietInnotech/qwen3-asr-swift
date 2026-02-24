@@ -2,7 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXFast
-import Qwen3Common
+import AudioCommon
 
 /// GQA attention for TTS Talker with standard RoPE via MLXFast fused kernel.
 ///

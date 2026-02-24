@@ -17,8 +17,8 @@ let package = Package(
             targets: ["Qwen3TTS"]
         ),
         .library(
-            name: "Qwen3Common",
-            targets: ["Qwen3Common"]
+            name: "AudioCommon",
+            targets: ["AudioCommon"]
         ),
         .library(
             name: "CosyVoiceTTS",
@@ -52,7 +52,7 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "Qwen3Common",
+            name: "AudioCommon",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
@@ -62,7 +62,7 @@ let package = Package(
         .target(
             name: "Qwen3ASR",
             dependencies: [
-                "Qwen3Common",
+                "AudioCommon",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift")
@@ -71,7 +71,7 @@ let package = Package(
         .target(
             name: "Qwen3TTS",
             dependencies: [
-                "Qwen3Common",
+                "AudioCommon",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift")
@@ -80,7 +80,7 @@ let package = Package(
         .target(
             name: "CosyVoiceTTS",
             dependencies: [
-                "Qwen3Common",
+                "AudioCommon",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
@@ -105,7 +105,7 @@ let package = Package(
             name: "CosyVoiceTTSCLI",
             dependencies: [
                 "CosyVoiceTTS",
-                "Qwen3Common",
+                "AudioCommon",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]
@@ -113,7 +113,7 @@ let package = Package(
         .target(
             name: "PersonaPlex",
             dependencies: [
-                "Qwen3Common",
+                "AudioCommon",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift")
@@ -123,29 +123,29 @@ let package = Package(
             name: "PersonaPlexCLI",
             dependencies: [
                 "PersonaPlex",
-                "Qwen3Common",
+                "AudioCommon",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]
         ),
         .testTarget(
             name: "PersonaPlexTests",
-            dependencies: ["PersonaPlex", "Qwen3Common", "Qwen3ASR"]
+            dependencies: ["PersonaPlex", "AudioCommon", "Qwen3ASR"]
         ),
         .testTarget(
             name: "Qwen3ASRTests",
-            dependencies: ["Qwen3ASR", "Qwen3Common"],
+            dependencies: ["Qwen3ASR", "AudioCommon"],
             resources: [
                 .copy("Resources/test_audio.wav")
             ]
         ),
         .testTarget(
             name: "Qwen3TTSTests",
-            dependencies: ["Qwen3TTS", "Qwen3ASR", "Qwen3Common"]
+            dependencies: ["Qwen3TTS", "Qwen3ASR", "AudioCommon"]
         ),
         .testTarget(
             name: "CosyVoiceTTSTests",
-            dependencies: ["CosyVoiceTTS", "Qwen3Common"]
+            dependencies: ["CosyVoiceTTS", "AudioCommon"]
         )
     ]
 )
