@@ -49,6 +49,20 @@ final class MockPersonaPlexModel: SpeechToSpeechModel {
     }
 }
 
+/// Mock VAD model that returns configurable speech segments.
+final class MockVADModel: VoiceActivityDetector {
+    var inputSampleRate: Int { 16000 }
+    /// Segments to return from detectSpeech. Defaults to one segment covering all audio.
+    var stubbedSegments: ((Int) -> [SpeechSegment]) = { total in
+        [SpeechSegment(startSample: 0, endSample: total, sampleRate: 16000)]
+    }
+    func detectSpeech(audio: [Float], sampleRate: Int) throws -> [SpeechSegment] {
+        stubbedSegments(audio.count)
+    }
+    func detectSpeechProbability(chunk: [Float]) throws -> Float { 0.9 }
+    func resetState() {}
+}
+
 // MARK: - Helpers
 
 /// Build a `ModelContext` with the given mocks (pass nil to leave that model unloaded).
@@ -57,11 +71,12 @@ func makeContext(
     tts: (any SpeechGenerationModel)? = nil,
     aligner: (any ForcedAlignmentModel)? = nil,
     personaPlex: (any SpeechToSpeechModel)? = nil,
+    vad: (any VoiceActivityDetector)? = nil,
     ttsEngineName: String? = nil,
     ttsSampleRate: Int? = nil
 ) -> ModelContext {
     ModelContext(asr: asr, tts: tts, aligner: aligner, personaPlex: personaPlex,
-                 ttsEngineName: ttsEngineName, ttsSampleRate: ttsSampleRate)
+                 vad: vad, ttsEngineName: ttsEngineName, ttsSampleRate: ttsSampleRate)
 }
 
 /// Build a Hummingbird `Application` with all routes registered against the given context.
@@ -72,6 +87,7 @@ func makeApp(context: ModelContext) -> some ApplicationProtocol {
     SpeechRoute.register(on: router, models: context)
     AlignmentRoute.register(on: router, models: context)
     RespondRoute.register(on: router, models: context)
+    VADRoute.register(on: router, models: context)
     return Application(router: router)
 }
 
@@ -438,5 +454,81 @@ final class MultipartParserTests: XCTestCase {
         XCTAssertEqual(parts.count, 2)
         XCTAssertEqual(parts[0].name, "file")
         XCTAssertEqual(String(data: parts[1].data, encoding: .utf8), "en")
+    }
+}
+
+// MARK: - VAD Route Tests
+
+final class VADRouteTests: XCTestCase {
+
+    func testVADNotLoaded_ReturnsServiceUnavailable() async throws {
+        let ctx = makeContext()  // No VAD
+        let app = makeApp(context: ctx)
+        let wav = silentWAVData(samples: 16000)
+        let (body, ct) = multipartBody(fileData: wav)
+
+        try await app.test(.router) { client in
+            let response = try await client.execute(
+                uri: "/v1/audio/vad", method: .post,
+                headers: [.contentType: ct], body: ByteBuffer(data: body)
+            )
+            XCTAssertEqual(response.status, .serviceUnavailable)
+        }
+    }
+
+    func testVADRoute_ReturnsSegments() async throws {
+        let mockVAD = MockVADModel()
+        // Stub: return one segment from 0s to 1s
+        mockVAD.stubbedSegments = { _ in
+            [SpeechSegment(startSample: 0, endSample: 16000, sampleRate: 16000)]
+        }
+        let ctx = makeContext(asr: MockASRModel(), vad: mockVAD)
+        let app = makeApp(context: ctx)
+        let wav = silentWAVData(samples: 16000)
+        let (body, ct) = multipartBody(fileData: wav)
+
+        try await app.test(.router) { client in
+            let response = try await client.execute(
+                uri: "/v1/audio/vad", method: .post,
+                headers: [.contentType: ct], body: ByteBuffer(data: body)
+            )
+            XCTAssertEqual(response.status, .ok)
+            let json = try JSONDecoder().decode(VADResponse.self, from: Data(buffer: response.body))
+            XCTAssertEqual(json.segment_count, 1)
+            XCTAssertEqual(json.segments[0].start, 0.0, accuracy: 0.001)
+            XCTAssertEqual(json.segments[0].end, 1.0, accuracy: 0.001)
+        }
+    }
+
+    func testVADRoute_NoSpeech_ReturnsEmptySegments() async throws {
+        let mockVAD = MockVADModel()
+        mockVAD.stubbedSegments = { _ in [] }  // No speech detected
+        let ctx = makeContext(asr: MockASRModel(), vad: mockVAD)
+        let app = makeApp(context: ctx)
+        let wav = silentWAVData(samples: 16000)
+        let (body, ct) = multipartBody(fileData: wav)
+
+        try await app.test(.router) { client in
+            let response = try await client.execute(
+                uri: "/v1/audio/vad", method: .post,
+                headers: [.contentType: ct], body: ByteBuffer(data: body)
+            )
+            XCTAssertEqual(response.status, .ok)
+            let json = try JSONDecoder().decode(VADResponse.self, from: Data(buffer: response.body))
+            XCTAssertEqual(json.segment_count, 0)
+            XCTAssertEqual(json.speech_duration, 0.0, accuracy: 0.001)
+        }
+    }
+
+    func testVADInHealthModels_WhenLoaded() async throws {
+        let ctx = makeContext(vad: MockVADModel())
+        let app = makeApp(context: ctx)
+
+        try await app.test(.router) { client in
+            let response = try await client.execute(uri: "/v1/models", method: .get)
+            XCTAssertEqual(response.status, .ok)
+            let json = try JSONDecoder().decode(ModelListResponse.self, from: Data(buffer: response.body))
+            XCTAssertTrue(json.data.contains(where: { $0.id == "silero-vad" }))
+        }
     }
 }

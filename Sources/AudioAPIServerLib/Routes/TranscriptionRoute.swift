@@ -35,11 +35,20 @@ public enum TranscriptionRoute {
                 ?? "json"
 
             // Decode audio
-            let samples: [Float]
+            let rawSamples: [Float]
             do {
-                samples = try AudioDecoder.decode(data: filePart.data, targetSampleRate: 16000)
+                rawSamples = try AudioDecoder.decode(data: filePart.data, targetSampleRate: 16000)
             } catch {
                 return errorResponse(.badRequest, "Failed to decode audio: \(error.localizedDescription)")
+            }
+
+            // VAD: trim leading/trailing silence when VAD is loaded
+            let samples: [Float]
+            do {
+                samples = try await models.concatenateSpeech(audio: rawSamples, sampleRate: 16000)
+            } catch {
+                // Non-fatal: fall back to unprocessed audio
+                samples = rawSamples
             }
 
             // Transcribe

@@ -121,8 +121,8 @@ public enum AudioFileLoader {
         return (samples, Int(sampleRate))
     }
 
-    /// Simple linear resampling
-    private static func resample(_ samples: [Float], from inputRate: Int, to outputRate: Int) -> [Float] {
+    /// Simple linear resampling. Public so other AudioCommon consumers (e.g. SileroVAD) can reuse it.
+    public static func resample(_ samples: [Float], from inputRate: Int, to outputRate: Int) -> [Float] {
         let ratio = Double(outputRate) / Double(inputRate)
         let outputLength = Int(Double(samples.count) * ratio)
 

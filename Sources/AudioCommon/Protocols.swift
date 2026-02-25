@@ -86,3 +86,48 @@ public protocol SpeechToSpeechModel: AnyObject {
     /// Generate response audio from input audio with streaming output
     func respondStream(userAudio: [Float]) -> AsyncThrowingStream<AudioChunk, Error>
 }
+
+// MARK: - Speech Segment
+
+/// A contiguous span of audio that contains detected speech.
+public struct SpeechSegment: Sendable {
+    /// Start position in the audio buffer (sample index)
+    public let startSample: Int
+    /// End position in the audio buffer (sample index, exclusive)
+    public let endSample: Int
+    /// Start time in seconds
+    public let startTime: Float
+    /// End time in seconds
+    public let endTime: Float
+
+    public init(startSample: Int, endSample: Int, sampleRate: Int) {
+        self.startSample = startSample
+        self.endSample = endSample
+        self.startTime = Float(startSample) / Float(sampleRate)
+        self.endTime = Float(endSample) / Float(sampleRate)
+    }
+
+    public var duration: Float { endTime - startTime }
+}
+
+// MARK: - Voice Activity Detection
+
+/// A model that detects speech segments in audio.
+public protocol VoiceActivityDetector: AnyObject {
+    /// Expected input sample rate in Hz (Silero VAD uses 16000)
+    var inputSampleRate: Int { get }
+
+    /// Detect all speech segments in a complete audio buffer.
+    /// Auto-resamples if `sampleRate` differs from `inputSampleRate`.
+    func detectSpeech(audio: [Float], sampleRate: Int) throws -> [SpeechSegment]
+
+    /// Process one pre-resampled chunk at `inputSampleRate`, returning speech probability in [0, 1].
+    /// Maintains internal LSTM state across calls — suitable for streaming.
+    func detectSpeechProbability(chunk: [Float]) throws -> Float
+
+    /// Reset LSTM hidden state and context buffer.
+    /// Must be called between independent audio streams.
+    func resetState()
+}
+
+

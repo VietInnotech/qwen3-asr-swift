@@ -58,6 +58,30 @@ public struct AlignmentResponse: Codable, Sendable {
     public let words: [WordTimestamp]
 }
 
+// MARK: - VAD Response
+
+/// A single speech segment in a VAD response.
+public struct VADSegmentResponse: Codable, Sendable {
+    /// Start time of the speech segment in seconds
+    public let start: Float
+    /// End time of the speech segment in seconds
+    public let end: Float
+    /// Duration of this segment in seconds
+    public let duration: Float
+}
+
+/// POST /v1/audio/vad response
+public struct VADResponse: Codable, Sendable {
+    /// Detected speech segments
+    public let segments: [VADSegmentResponse]
+    /// Total speech duration in seconds
+    public let speech_duration: Float
+    /// Total audio duration in seconds
+    public let total_duration: Float
+    /// Number of detected speech segments
+    public let segment_count: Int
+}
+
 /// Generic error response
 public struct ErrorResponse: Codable, Sendable {
     public let error: ErrorDetail

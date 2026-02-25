@@ -96,3 +96,9 @@ These are real mistakes made during API server development. Each rule prevents a
 ### Dependency Injection / Testability
 
 - **State holders (e.g. `ModelContext`) must store protocol types, not concrete types.** Storing `Qwen3ASRModel` makes the mock-injection impossible. Store `any SpeechRecognitionModel` (and similar). Violating this forces concrete-type tests which require model downloads.
+
+### VAD Pipeline
+
+- **VAD trimming ≠ VAD silence removal.** `audio[first.start ..< last.end]` only removes leading/trailing silence — all inter-segment gaps remain, wasting inference time. For transcription, always **concatenate** every detected segment (`vadConcatenatedAudio` / `ModelContext.concatenateSpeech`). Only use trim+offset when timestamps must map back to original audio (forced alignment).
+
+- **One VAD function, two callers, two different needs.** `TranscribeCommand`/`TranscriptionRoute`/`RespondRoute` need segment concatenation. `AlignCommand`/`AlignmentRoute` need trim+offset. Keep these as separate functions (`concatenateSpeech` and `trimSilence`) — do not merge or alias them.

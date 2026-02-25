@@ -16,6 +16,7 @@ public actor ModelContext {
     public let tts: (any SpeechGenerationModel)?
     public let aligner: (any ForcedAlignmentModel)?
     public let personaPlex: (any SpeechToSpeechModel)?
+    public let vad: (any VoiceActivityDetector)?
 
     /// TTS engine name for /v1/models listing
     public let ttsEngineName: String?
@@ -28,6 +29,7 @@ public actor ModelContext {
         tts: (any SpeechGenerationModel)?,
         aligner: (any ForcedAlignmentModel)?,
         personaPlex: (any SpeechToSpeechModel)?,
+        vad: (any VoiceActivityDetector)? = nil,
         ttsEngineName: String?,
         ttsSampleRate: Int?
     ) {
@@ -35,6 +37,7 @@ public actor ModelContext {
         self.tts = tts
         self.aligner = aligner
         self.personaPlex = personaPlex
+        self.vad = vad
         self.ttsEngineName = ttsEngineName
         self.ttsSampleRate = ttsSampleRate
     }
@@ -71,6 +74,73 @@ public actor ModelContext {
         return personaPlex.respondStream(userAudio: audio)
     }
 
+    // MARK: - VAD Methods
+
+    /// Detect all speech segments in an audio buffer. Returns nil if VAD is not loaded.
+    public func detectSpeech(audio: [Float], sampleRate: Int) throws -> [SpeechSegment]? {
+        guard let vad else { return nil }
+        return try vad.detectSpeech(audio: audio, sampleRate: sampleRate)
+    }
+
+    /// Concatenate all detected speech segments, removing all silence (inter-segment and leading/trailing).
+    /// Use this for transcription where no timestamp mapping is needed.
+    /// Returns the original audio unchanged if VAD is not loaded or no speech is found.
+    public func concatenateSpeech(audio: [Float], sampleRate: Int) throws -> [Float] {
+        guard let segments = try detectSpeech(audio: audio, sampleRate: sampleRate),
+              !segments.isEmpty else {
+            return audio
+        }
+        var result: [Float] = []
+        for segment in segments {
+            let end = min(segment.endSample, audio.count)
+            if segment.startSample < end {
+                result.append(contentsOf: audio[segment.startSample ..< end])
+            }
+        }
+        return result
+    }
+
+    /// Trim leading and trailing silence from audio using VAD, returning the start offset.
+    /// Use this when timestamps must map back to the original audio (e.g. forced alignment).
+    /// Returns the original audio unchanged if VAD is not loaded or no speech is found.
+    public func trimSilence(audio: [Float], sampleRate: Int) throws -> (samples: [Float], offsetSamples: Int) {
+        guard let segments = try detectSpeech(audio: audio, sampleRate: sampleRate),
+              !segments.isEmpty else {
+            return (audio, 0)
+        }
+        let start = segments.first!.startSample
+        let end = segments.last!.endSample
+        let trimmed = Array(audio[start ..< min(end, audio.count)])
+        return (trimmed, start)
+    }
+
+    /// Check whether the tail of an audio buffer contains speech (for end-of-turn detection).
+    /// Returns `true` if the last `windowSamples` samples are above `threshold` on average.
+    /// Returns `nil` if VAD is not loaded.
+    public func isSpeaking(
+        audio: [Float],
+        sampleRate: Int,
+        windowSeconds: Float = 0.3,
+        threshold: Float = 0.4
+    ) throws -> Bool? {
+        guard let vad else { return nil }
+        let windowSamples = Int(windowSeconds * Float(vad.inputSampleRate))
+        guard audio.count >= windowSamples else { return nil }
+        let tail = Array(audio.suffix(windowSamples))
+        vad.resetState()
+        var probabilities: [Float] = []
+        var offset = 0
+        let chunkSize = 512
+        while offset + chunkSize <= tail.count {
+            let chunk = Array(tail[offset ..< offset + chunkSize])
+            probabilities.append(try vad.detectSpeechProbability(chunk: chunk))
+            offset += chunkSize
+        }
+        guard !probabilities.isEmpty else { return nil }
+        let avgProb = probabilities.reduce(0, +) / Float(probabilities.count)
+        return avgProb >= threshold
+    }
+
     // MARK: - Model Status
 
     public var status: ModelStatus {
@@ -79,6 +149,7 @@ public actor ModelContext {
             tts: tts != nil,
             aligner: aligner != nil,
             personaPlex: personaPlex != nil,
+            vad: vad != nil,
             ttsEngine: ttsEngineName
         )
     }
@@ -91,6 +162,7 @@ public actor ModelContext {
         ttsModelSpec: String,
         enableAligner: Bool,
         enablePersonaPlex: Bool,
+        enableVAD: Bool = true,
         logger: Logger
     ) async throws -> ModelContext {
         // ASR
@@ -163,11 +235,23 @@ public actor ModelContext {
             )
         }
 
+        // VAD
+        var vad: (any VoiceActivityDetector)? = nil
+        if enableVAD {
+            logger.info("Loading Silero VAD...")
+            vad = try await SileroVADModel.fromPretrained(
+                progressHandler: { progress, status in
+                    logger.info("VAD: \(status) (\(Int(progress * 100))%)")
+                }
+            )
+        }
+
         return ModelContext(
             asr: asr,
             tts: tts,
             aligner: aligner,
             personaPlex: personaPlex,
+            vad: vad,
             ttsEngineName: ttsEngineName,
             ttsSampleRate: ttsSampleRate
         )
@@ -194,6 +278,7 @@ public struct ModelStatus: Codable, Sendable {
     public let tts: Bool
     public let aligner: Bool
     public let personaPlex: Bool
+    public let vad: Bool
     public let ttsEngine: String?
 }
 

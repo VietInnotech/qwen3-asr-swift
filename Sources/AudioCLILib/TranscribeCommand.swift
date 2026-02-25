@@ -18,6 +18,9 @@ public struct TranscribeCommand: ParsableCommand {
     @Option(name: .long, help: "Language hint (optional)")
     public var language: String?
 
+    @Flag(name: .long, help: "Disable VAD-based silence trimming")
+    public var noVAD: Bool = false
+
     public init() {}
 
     public func run() throws {
@@ -27,16 +30,34 @@ public struct TranscribeCommand: ParsableCommand {
             let sizeLabel = detectedSize == .large ? "1.7B" : "0.6B"
 
             print("Loading audio: \(audioFile)")
-            let audio = try AudioFileLoader.load(
-                url: URL(fileURLWithPath: audioFile), targetSampleRate: 24000)
-            print("  Loaded \(audio.count) samples (\(formatDuration(audio.count))s)")
+            var audio = try AudioFileLoader.load(
+                url: URL(fileURLWithPath: audioFile), targetSampleRate: 16000)
+            print("  Loaded \(audio.count) samples (\(formatDuration(audio.count, sampleRate: 16000))s @ 16kHz)")
+
+            // VAD: concatenate all speech segments, removing all silence
+            if !noVAD {
+                print("Running VAD...")
+                let vad = try await SileroVADModel.fromPretrained(progressHandler: reportProgress)
+                audio = vadConcatenatedAudio(audio, sampleRate: 16000, vad: vad)
+            }
 
             print("Loading model (\(sizeLabel)): \(modelId)")
             let asrModel = try await Qwen3ASRModel.fromPretrained(
                 modelId: modelId, progressHandler: reportProgress)
 
             print("Transcribing...")
-            let result = asrModel.transcribe(audio: audio, sampleRate: 24000, language: language)
+            let result = asrModel.transcribe(
+                audio: audio,
+                sampleRate: 16000,
+                language: language,
+                progressHandler: { chunkIndex, totalChunks, offsetSeconds in
+                    if totalChunks > 1 {
+                        let minutes = Int(offsetSeconds) / 60
+                        let seconds = Int(offsetSeconds) % 60
+                        print("  Chunk \(chunkIndex + 1)/\(totalChunks) (\(String(format: "%d:%02d", minutes, seconds))s)...")
+                    }
+                }
+            )
             print("Result: \(result)")
         }
     }

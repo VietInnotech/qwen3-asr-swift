@@ -157,6 +157,10 @@ let package = Package(
                 "AudioCLILib",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]
+        ),
+        .testTarget(
+            name: "AudioCommonTests",
+            dependencies: ["AudioCommon"]
         )
     ]
 )

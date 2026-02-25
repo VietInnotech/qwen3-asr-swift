@@ -40,19 +40,37 @@ public enum AlignmentRoute {
                 .flatMap { String(data: $0.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) }
 
             // Decode audio
-            let samples: [Float]
+            let rawSamples: [Float]
             do {
-                samples = try AudioDecoder.decode(data: filePart.data, targetSampleRate: 16000)
+                rawSamples = try AudioDecoder.decode(data: filePart.data, targetSampleRate: 16000)
             } catch {
                 return errorResponse(.badRequest, "Failed to decode audio: \(error.localizedDescription)")
             }
+
+            // VAD: trim silence and track the sample offset for timestamp correction
+            let samples: [Float]
+            let trimOffsetSamples: Int
+            do {
+                (samples, trimOffsetSamples) = try await models.trimSilence(audio: rawSamples, sampleRate: 16000)
+            } catch {
+                samples = rawSamples
+                trimOffsetSamples = 0
+            }
+            let trimOffsetSeconds = Float(trimOffsetSamples) / 16000.0
 
             // Align
             let aligned = await models.align(
                 audio: samples, text: text, sampleRate: 16000, language: language
             )
 
-            let words = aligned.map { WordTimestamp(word: $0.text, start: $0.startTime, end: $0.endTime) }
+            // Adjust timestamps by trim offset so they reference the original audio timeline
+            let words = aligned.map {
+                WordTimestamp(
+                    word: $0.text,
+                    start: $0.startTime + trimOffsetSeconds,
+                    end: $0.endTime + trimOffsetSeconds
+                )
+            }
             return jsonResponse(AlignmentResponse(words: words))
         }
     }

@@ -32,11 +32,19 @@ public enum RespondRoute {
             }
 
             // Decode audio at 24kHz (PersonaPlex input rate)
-            let samples: [Float]
+            let rawSamples: [Float]
             do {
-                samples = try AudioDecoder.decode(data: filePart.data, targetSampleRate: 24000)
+                rawSamples = try AudioDecoder.decode(data: filePart.data, targetSampleRate: 24000)
             } catch {
                 return errorResponse(.badRequest, "Failed to decode audio: \(error.localizedDescription)")
+            }
+
+            // VAD: trim silence before sending to PersonaPlex
+            let samples: [Float]
+            do {
+                (samples, _) = try await models.trimSilence(audio: rawSamples, sampleRate: 24000)
+            } catch {
+                samples = rawSamples
             }
 
             // Generate spoken response

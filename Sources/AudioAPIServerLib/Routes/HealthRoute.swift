@@ -31,6 +31,9 @@ public enum HealthRoute {
             if status.personaPlex {
                 modelList.append(ModelInfo(id: "personaplex", object: "model", owned_by: "local"))
             }
+            if status.vad {
+                modelList.append(ModelInfo(id: "silero-vad", object: "model", owned_by: "local"))
+            }
 
             return jsonResponse(ModelListResponse(object: "list", data: modelList))
         }

@@ -49,12 +49,48 @@ public class Qwen3ASRModel {
         self.textDecoder = QuantizedTextModel(config: textConfig)
     }
 
-    /// Transcribe audio to text
+    /// Transcribe audio to text (handles audio of any length by chunking)
+    /// - Parameter progressHandler: Called before each chunk with (chunkIndex, totalChunks, offsetSeconds)
     public func transcribe(
         audio: [Float],
         sampleRate: Int = 16000,
         language: String? = nil,
-        maxTokens: Int = 448
+        maxTokens: Int = 448,
+        progressHandler: ((_ chunkIndex: Int, _ totalChunks: Int, _ offsetSeconds: Double) -> Void)? = nil
+    ) -> String {
+        let chunkSamples = featureExtractor.chunkLength * sampleRate
+
+        guard audio.count > chunkSamples else {
+            progressHandler?(0, 1, 0)
+            return transcribeChunk(audio: audio, sampleRate: sampleRate, language: language, maxTokens: maxTokens)
+        }
+
+        // Long audio: iterate over 30-second chunks and concatenate results
+        let totalChunks = (audio.count + chunkSamples - 1) / chunkSamples
+        var results: [String] = []
+        var offset = 0
+        var chunkIndex = 0
+        while offset < audio.count {
+            let end = min(offset + chunkSamples, audio.count)
+            let offsetSeconds = Double(offset) / Double(sampleRate)
+            progressHandler?(chunkIndex, totalChunks, offsetSeconds)
+            let chunk = Array(audio[offset..<end])
+            let text = transcribeChunk(audio: chunk, sampleRate: sampleRate, language: language, maxTokens: maxTokens)
+            if !text.isEmpty {
+                results.append(text)
+            }
+            offset = end
+            chunkIndex += 1
+        }
+        return results.joined(separator: " ")
+    }
+
+    /// Transcribe a single audio chunk (≤30 seconds at input sample rate)
+    private func transcribeChunk(
+        audio: [Float],
+        sampleRate: Int,
+        language: String?,
+        maxTokens: Int
     ) -> String {
         // Extract mel features
         let melFeatures = featureExtractor.process(audio, sampleRate: sampleRate)

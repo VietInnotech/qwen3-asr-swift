@@ -154,7 +154,7 @@ public enum HuggingFaceDownloader {
         }
     }
 
-    /// Download model files from HuggingFace with smooth byte-level progress.
+    /// Download the safetensors weights and config files for a model from HuggingFace.
     public static func downloadWeights(
         modelId: String,
         to directory: URL,
@@ -224,6 +224,75 @@ public enum HuggingFaceDownloader {
             }
 
             progressHandler?(Double(index + 1) / totalFiles)
+        }
+    }
+
+    // MARK: - Repo tree download (for CoreML .mlpackage bundles)
+
+    /// Download all files in a HuggingFace repo that pass `filterPaths`, preserving
+    /// the repo's directory structure under `directory`.
+    ///
+    /// Used for CoreML model bundles (`.mlpackage`) that are stored as directory
+    /// trees on HuggingFace rather than flat files.
+    ///
+    /// - Parameters:
+    ///   - modelId: HuggingFace repo ID, e.g. `"FluidInference/silero-vad-coreml"`.
+    ///   - directory: Local destination directory. Sub-directories are created as needed.
+    ///   - filterPaths: Optional predicate; only files whose `rfilename` passes are downloaded.
+    ///   - progressHandler: Called with progress in [0, 1].
+    public static func downloadRepoFiles(
+        modelId: String,
+        to directory: URL,
+        filterPaths: ((String) -> Bool)? = nil,
+        progressHandler: ((Double) -> Void)? = nil
+    ) async throws {
+        // Fetch full file list from HuggingFace API (?full=true includes sub-directory files)
+        guard let apiURL = URL(string: "https://huggingface.co/api/models/\(modelId)?full=true") else {
+            throw DownloadError.failedToDownload("Invalid model ID: \(modelId)")
+        }
+
+        let session = URLSession(configuration: .default)
+        defer { session.finishTasksAndInvalidate() }
+
+        let (data, _) = try await session.data(from: apiURL)
+
+        struct HFRepo: Decodable {
+            struct Sibling: Decodable { let rfilename: String }
+            let siblings: [Sibling]
+        }
+        let repo = try JSONDecoder().decode(HFRepo.self, from: data)
+
+        // Filter file list
+        var files = repo.siblings.map(\.rfilename)
+        if let filter = filterPaths { files = files.filter(filter) }
+
+        let baseURL = "https://huggingface.co/\(modelId)/resolve/main"
+        let total = Double(max(files.count, 1))
+
+        for (i, rfilename) in files.enumerated() {
+            // Safety: reject path traversal
+            guard !rfilename.contains(".."), !rfilename.hasPrefix("/") else { continue }
+
+            let localPath = directory.appendingPathComponent(rfilename)
+            let parentDir = localPath.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+
+            if FileManager.default.fileExists(atPath: localPath.path) {
+                progressHandler?(Double(i + 1) / total)
+                continue
+            }
+
+            let encoded = rfilename.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? rfilename
+            guard let fileURL = URL(string: "\(baseURL)/\(encoded)") else { continue }
+
+            let fileIdx = Double(i)
+            try await downloadFile(url: fileURL, to: localPath, fileName: rfilename) { written, total in
+                if total > 0 {
+                    let overall = (fileIdx + Double(written) / Double(total)) / Double(files.count)
+                    progressHandler?(overall)
+                }
+            }
+            progressHandler?(Double(i + 1) / total)
         }
     }
 }

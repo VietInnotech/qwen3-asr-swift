@@ -32,6 +32,9 @@ struct AudioAPIServerCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable PersonaPlex speech-to-speech endpoint (5.3 GB download)")
     var enablePersonaPlex: Bool = false
 
+    @Flag(name: .long, help: "Disable VAD-based silence trimming (enabled by default)")
+    var disableVAD: Bool = false
+
     func run() async throws {
         let logger = Logger(label: "audio-api")
 
@@ -43,6 +46,7 @@ struct AudioAPIServerCommand: AsyncParsableCommand {
             ttsModelSpec: ttsModel,
             enableAligner: enableAligner,
             enablePersonaPlex: enablePersonaPlex,
+            enableVAD: !disableVAD,
             logger: logger
         )
         logger.info("All models loaded.")
@@ -56,6 +60,7 @@ struct AudioAPIServerCommand: AsyncParsableCommand {
         SpeechRoute.register(on: router, models: models)
         AlignmentRoute.register(on: router, models: models)
         RespondRoute.register(on: router, models: models)
+        VADRoute.register(on: router, models: models)
 
         // Start server
         let app = Application(
