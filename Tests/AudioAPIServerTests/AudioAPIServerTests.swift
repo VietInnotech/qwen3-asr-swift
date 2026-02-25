@@ -159,13 +159,13 @@ final class TranscriptionRouteTests: XCTestCase {
         let ctx = makeContext(asr: asr)
         let app = makeApp(context: ctx)
 
-        var body = Data()
+        var bodyData = Data()
         let boundary = "TestBoundary123"
         let fileData = silentWAVData()
-        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
-        body.append(fileData)
-        body.append("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\ntext\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-        let body = body  // freeze var before async capture
+        bodyData.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+        bodyData.append(fileData)
+        bodyData.append("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\ntext\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        let body = bodyData  // freeze for async capture
 
         try await app.test(.router) { client in
             try await client.execute(
@@ -284,13 +284,13 @@ final class AlignmentRouteTests: XCTestCase {
         let ctx = makeContext(aligner: MockAligner())
         let app = makeApp(context: ctx)
 
-        var body = Data()
+        var bodyData = Data()
         let boundary = "TestBoundary"
         let fileData = silentWAVData()
-        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
-        body.append(fileData)
-        body.append("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\nHello world\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-        let body = body  // freeze var before async capture
+        bodyData.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+        bodyData.append(fileData)
+        bodyData.append("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\nHello world\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        let body = bodyData  // freeze for async capture
 
         try await app.test(.router) { client in
             try await client.execute(
