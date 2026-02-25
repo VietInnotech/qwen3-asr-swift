@@ -449,6 +449,129 @@ swift build -c release
 
 RTF = Real-Time Factor (lower is better, < 1.0 = faster than real-time).
 
+## API Server
+
+`audio-api` is a local HTTP server exposing all models via an OpenAI-compatible REST API.
+No auth, no rate limiting — designed to run behind a reverse proxy.
+
+### Build
+
+```bash
+swift build -c release
+# Binary: .build/arm64-apple-macosx/release/audio-api
+```
+
+> **Note:** On macOS Apple Silicon, the binary is at `.build/arm64-apple-macosx/release/audio-api`, not `.build/release/audio-api`.
+
+### Run
+
+```bash
+# ASR only (fastest start — model auto-downloads ~400 MB)
+.build/arm64-apple-macosx/release/audio-api --asr-model 0.6B --tts-engine none --port 8080
+
+# ASR + Qwen3-TTS
+.build/arm64-apple-macosx/release/audio-api --asr-model 1.7B --tts-engine qwen3 --port 8080
+
+# ASR + CosyVoice TTS
+.build/arm64-apple-macosx/release/audio-api --asr-model 0.6B --tts-engine cosyvoice --port 8080
+
+# All models (ASR + TTS + ForcedAligner + PersonaPlex)
+.build/arm64-apple-macosx/release/audio-api --asr-model 1.7B --tts-engine cosyvoice \
+    --enable-aligner --enable-persona-plex --port 8080
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host` | `127.0.0.1` | Bind address |
+| `--port` | `8080` | Listen port |
+| `--asr-model` | `1.7B` | ASR model size: `0.6B` or `1.7B` |
+| `--tts-engine` | `none` | TTS engine: `qwen3`, `cosyvoice`, or `none` |
+| `--enable-aligner` | off | Load the ForcedAligner model |
+| `--enable-persona-plex` | off | Load the PersonaPlex model |
+
+### Endpoints
+
+#### `GET /health`
+
+```bash
+curl http://localhost:8080/health
+# {"status":"ok","models":{"asr":true,"tts":false,"aligner":false,"personaPlex":false}}
+```
+
+#### `GET /v1/models`
+
+```bash
+curl http://localhost:8080/v1/models
+# {"object":"list","data":[{"id":"qwen3-asr","object":"model","owned_by":"qwen3-asr-swift"}]}
+```
+
+#### `POST /v1/audio/transcriptions` — Speech-to-Text
+
+OpenAI-compatible. Accepts WAV, MP3, CAF, and any format supported by AVFoundation.
+
+```bash
+# JSON response (default)
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F file=@audio.wav
+# {"text":"Hello world"}
+
+# Plain text response
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F file=@audio.wav \
+  -F response_format=text
+# Hello world
+
+# Verbose JSON with per-word timestamps (requires --enable-aligner)
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F file=@audio.wav \
+  -F response_format=verbose_json \
+  -F language=en
+
+# With explicit language
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F file=@audio.wav \
+  -F language=vi
+```
+
+#### `POST /v1/audio/speech` — Text-to-Speech
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Hello world","language":"english"}' \
+  --output speech.wav
+```
+
+#### `POST /v1/audio/alignments` — Forced Alignment (word timestamps)
+
+Requires `--enable-aligner`.
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/alignments \
+  -F file=@audio.wav \
+  -F text="Hello world"
+# {"words":[{"word":"Hello","start":0.12,"end":0.45},{"word":"world","start":0.45,"end":0.98}]}
+```
+
+#### `POST /v1/audio/respond` — Speech-to-Speech (PersonaPlex)
+
+Requires `--enable-persona-plex`. Returns a WAV response to the audio question.
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/respond \
+  -F file=@question.wav \
+  --output response.wav
+```
+
+### Running Tests
+
+```bash
+# Unit tests (no model download needed — uses mocks)
+swift test --filter AudioAPIServerTests
+```
+
 ## Architecture
 
 See [ASR Inference](docs/asr-inference.md), [ASR Model](docs/asr-model.md), [Forced Aligner](docs/forced-aligner.md), [Qwen3-TTS Inference](docs/qwen3-tts-inference.md), [TTS Model](docs/tts-model.md), [CosyVoice TTS](docs/cosyvoice-tts.md), [PersonaPlex](docs/personaplex.md), [Shared Protocols](docs/shared-protocols.md) for detailed architecture docs.

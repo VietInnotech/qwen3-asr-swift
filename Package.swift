@@ -31,12 +31,17 @@ let package = Package(
         .executable(
             name: "audio",
             targets: ["AudioCLI"]
+        ),
+        .executable(
+            name: "audio-api",
+            targets: ["AudioAPIServer"]
         )
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.30.0"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
-        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6")
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6"),
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0")
     ],
     targets: [
         .target(
@@ -99,6 +104,33 @@ let package = Package(
         .executableTarget(
             name: "AudioCLI",
             dependencies: ["AudioCLILib"]
+        ),
+        .target(
+            name: "AudioAPIServerLib",
+            dependencies: [
+                "Qwen3ASR",
+                "Qwen3TTS",
+                "CosyVoiceTTS",
+                "PersonaPlex",
+                "AudioCommon",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "Hummingbird", package: "hummingbird")
+            ]
+        ),
+        .executableTarget(
+            name: "AudioAPIServer",
+            dependencies: [
+                "AudioAPIServerLib",
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ]
+        ),
+        .testTarget(
+            name: "AudioAPIServerTests",
+            dependencies: [
+                "AudioAPIServerLib",
+                "AudioCommon",
+                .product(name: "HummingbirdTesting", package: "hummingbird")
+            ]
         ),
         .testTarget(
             name: "PersonaPlexTests",
